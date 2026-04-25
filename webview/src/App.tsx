@@ -1,7 +1,8 @@
 // ─────────────────────────────────────────────────────────────
-// App shell — owns auth state, timeline, and shared composer state
-// (models, skills, attachments). Delegates to <AuthGate> or
-// <ChatScreen> based on auth status.
+// App shell — owns auth state, timeline, and shared composer
+// inputs (models, skills, pending-insert payload). Code from
+// Cmd+L flows in as a structured payload that the RichEditor
+// renders as an atomic, editable code block inline.
 // ─────────────────────────────────────────────────────────────
 
 import { useEffect, useReducer, useState } from "react";
@@ -10,16 +11,14 @@ import {
   onMessage,
   saveState,
   loadState,
-  newId,
   AuthMode,
   PermissionMode,
   TimelineEvent,
   EditorContext,
-  Attachment,
   ModelInfo,
   SkillInfo
 } from "./lib/rpc";
-import { Spinner } from "./design/primitives";
+import { Spinner, type CodeInsert } from "./design/primitives";
 import { AuthGate } from "./features/auth/AuthGate";
 import { ChatScreen } from "./features/chat";
 import { FALLBACK_MODELS } from "./features/chat/constants";
@@ -54,27 +53,6 @@ function timelineReducer(state: TimelineEvent[], action: TimelineAction): Timeli
   }
 }
 
-// ── Attachments reducer ──────────────────────────────────────
-
-type AttachAction =
-  | { type: "add"; attachment: Attachment }
-  | { type: "update"; id: string; patch: Partial<Attachment> }
-  | { type: "remove"; id: string }
-  | { type: "clear" };
-
-function attachmentsReducer(state: Attachment[], action: AttachAction): Attachment[] {
-  switch (action.type) {
-    case "add":
-      return state.some((a) => a.id === action.attachment.id) ? state : [...state, action.attachment];
-    case "update":
-      return state.map((a) => (a.id === action.id ? { ...a, ...action.patch } : a));
-    case "remove":
-      return state.filter((a) => a.id !== action.id);
-    case "clear":
-      return [];
-  }
-}
-
 // ── Component ────────────────────────────────────────────────
 
 export function App() {
@@ -90,8 +68,8 @@ export function App() {
   const [rewind, setRewind] = useState<{ restored: number; deleted: number } | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([...FALLBACK_MODELS]);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [attachments, dispatchAttachments] = useReducer(attachmentsReducer, []);
   const [composerFocusKey, setComposerFocusKey] = useState(0);
+  const [pendingInsert, setPendingInsert] = useState<CodeInsert | null>(null);
 
   // Persist non-volatile UI state.
   useEffect(() => {
@@ -140,7 +118,6 @@ export function App() {
           break;
         case "reset":
           dispatchTimeline({ type: "reset" });
-          dispatchAttachments({ type: "clear" });
           setStreaming("");
           setError(null);
           break;
@@ -182,41 +159,21 @@ export function App() {
         case "skills":
           setSkills(m.skills);
           break;
-        case "fileSnippet":
-          if (m.ok && m.text !== undefined) {
-            dispatchAttachments({
-              type: "update",
-              id: m.id,
-              patch: { text: m.text }
-            });
-          } else if (!m.ok) {
-            // Failed to read — drop the attachment so the user isn't confused.
-            dispatchAttachments({ type: "remove", id: m.id });
-            if (m.error) setError(m.error);
-          }
-          break;
-        case "insertSelection": {
-          // Cmd+L → add a code-snippet chip to the composer's attachment
-          // bar (rendered above the textarea). The chip carries the
-          // selected text so the user sees it as a discrete block instead
-          // of raw markdown in their prompt.
-          const att: Attachment = {
-            id: newId(),
-            kind: "selection",
-            label: m.file.split("/").pop() ?? m.file,
-            path: m.file,
+        case "insertSelection":
+          // Cmd+L payload — RichEditor renders this as a styled code block
+          // at the cursor; the markdown markers never appear to the user.
+          setPendingInsert({
+            file: m.file,
             language: m.language,
             startLine: m.startLine,
             endLine: m.endLine,
             text: m.text
-          };
-          dispatchAttachments({ type: "add", attachment: att });
+          });
           setComposerFocusKey((k) => k + 1);
           break;
-        }
         case "cliStatus":
         case "fileSearchResults":
-          // Consumed by the AuthGate / MentionPopover via their own subscriptions.
+          // Consumed by AuthGate / MentionPopover via their own subscriptions.
           break;
       }
     });
@@ -258,19 +215,17 @@ export function App() {
         rewind={rewind}
         models={models}
         skills={skills}
-        attachments={attachments}
         composerFocusKey={composerFocusKey}
+        pendingInsert={pendingInsert}
+        onInserted={() => setPendingInsert(null)}
         onInput={setInput}
-        onSubmit={(text, atts) => {
-          send({ type: "prompt", text, attachments: atts });
+        onSubmit={(text) => {
+          send({ type: "prompt", text });
           setInput("");
         }}
         onCancel={() => send({ type: "cancel" })}
         onDismissError={() => setError(null)}
         onDismissRewind={() => setRewind(null)}
-        onAddAttachment={(a) => dispatchAttachments({ type: "add", attachment: a })}
-        onRemoveAttachment={(id) => dispatchAttachments({ type: "remove", id })}
-        onClearAttachments={() => dispatchAttachments({ type: "clear" })}
       />
     </div>
   );

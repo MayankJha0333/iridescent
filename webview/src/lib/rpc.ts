@@ -72,19 +72,6 @@ export interface SkillInfo {
   external?: boolean;
 }
 
-export type AttachmentKind = "file" | "selection" | "snippet";
-
-export interface Attachment {
-  id: string;
-  kind: AttachmentKind;
-  label: string;
-  path?: string;
-  language?: string;
-  startLine?: number;
-  endLine?: number;
-  text?: string;
-}
-
 export interface FileSearchResult {
   path: string;
   name: string;
@@ -95,7 +82,7 @@ export interface FileSearchResult {
 export type Outbound =
   | { type: "refreshAuth" }
   | { type: "refreshEditorContext" }
-  | { type: "prompt"; text: string; attachments: Attachment[] }
+  | { type: "prompt"; text: string }
   | { type: "cancel" }
   | { type: "newSession" }
   | { type: "setModel"; model: string }
@@ -110,8 +97,7 @@ export type Outbound =
   | { type: "requestModels" }
   | { type: "requestSkills" }
   | { type: "requestFileSearch"; id: string; query: string }
-  | { type: "captureSelection" }
-  | { type: "readFileSnippet"; id: string; path: string };
+  | { type: "captureSelection" };
 
 // ── Inbound (extension → webview) ─────────────────────────────
 
@@ -139,15 +125,6 @@ export type Inbound =
       startLine: number;
       endLine: number;
       text: string;
-    }
-  | {
-      type: "fileSnippet";
-      id: string;
-      ok: boolean;
-      path?: string;
-      text?: string;
-      bytes?: number;
-      error?: string;
     };
 
 // ── API ───────────────────────────────────────────────────────

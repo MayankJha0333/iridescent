@@ -488,27 +488,16 @@ html, body, #root {
 }
 .msg-text { white-space: pre-wrap; }
 
-/* User message context block — renders auto-attached snippets as proper
-   code chips below the typed prose. */
-.msg-context {
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.msg-context strong {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 700;
+/* User-message bold "label" lines (e.g. **myflow.py:18-19**) get the same
+   accent-glow + mono treatment used inside the composer overlay so the
+   visual treatment of inline code blocks is identical from input to send. */
+.msg-user .md p strong:only-child,
+.msg-user strong:only-child {
   color: var(--accent-glow);
   font-family: var(--font-mono);
   letter-spacing: -0.1px;
-  margin-top: 4px;
+  font-weight: 700;
 }
-.msg-context .md-code-wrap {
-  margin: 2px 0 4px;
-}
-.msg-context > p:empty { display: none; }
 
 .msg-assistant .msg-avatar {
   background: linear-gradient(135deg, var(--accent), var(--accent-deep));
@@ -835,23 +824,102 @@ html, body, #root {
 }
 .cmp.busy { opacity: 0.92; }
 
-.cmp textarea {
+/* ─── RichEditor (contenteditable rich input) ─── */
+
+.cmp-editor-wrap {
+  position: relative;
   width: 100%;
-  background: transparent;
-  color: var(--t1);
-  border: none;
-  resize: none;
-  padding: 11px 14px 4px;
+}
+.reditor-wrap {
+  position: relative;
+  width: 100%;
+}
+.reditor {
+  width: 100%;
+  min-height: 44px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 11px 14px 6px;
   font-family: var(--font-sans);
   font-size: 13.5px;
-  line-height: 1.5;
+  line-height: 1.55;
+  color: var(--t1);
   outline: none;
-  display: block;
-  min-height: 22px;
-  max-height: 220px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  caret-color: var(--accent-glow);
 }
-.cmp textarea::placeholder { color: var(--t4); }
-.cmp textarea:disabled { cursor: not-allowed; }
+.reditor[contenteditable="false"] { opacity: 0.7; cursor: not-allowed; }
+.reditor::selection,
+.reditor *::selection {
+  background: rgba(99, 102, 241, 0.32);
+}
+.reditor-placeholder {
+  position: absolute;
+  top: 11px;
+  left: 14px;
+  right: 14px;
+  color: var(--t4);
+  pointer-events: none;
+  user-select: none;
+  white-space: pre-wrap;
+}
+
+/* @-mention text reference inline (e.g. "@myflow.py") — light accent
+   highlight to make it stand out from prose. */
+.reditor :where(span.re-mention) {
+  background: var(--accent-soft);
+  color: var(--accent-glow);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ── Inline code badge (atomic pill that flows with the prose) ── */
+.re-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px 1px 6px;
+  margin: 0 1px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-mid);
+  color: var(--accent-glow);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  line-height: 1.4;
+  vertical-align: baseline;
+  cursor: default;
+  user-select: none;
+  /* Subtle entrance so newly inserted badges feel responsive. */
+  animation: attachIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.re-badge:hover {
+  background: var(--accent-mid);
+  border-color: var(--accent);
+  color: var(--t1);
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.25);
+}
+.re-badge-icon {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+}
+.re-badge:hover .re-badge-icon { color: var(--t1); }
+.re-badge-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
 
 .cmp-toolbar {
   display: flex;
@@ -1501,116 +1569,6 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   Attachment chips
-   ═══════════════════════════════════════════════════════════════ */
-
-/* Chips sit at the top of the composer so they're in the user's eyeline
-   while typing, not buried at the bottom. */
-.attach-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 10px 4px;
-  animation: fadein 200ms cubic-bezier(0.16, 1, 0.3, 1);
-  border-bottom: 1px dashed var(--b1);
-  margin-bottom: 4px;
-}
-.attach-chip {
-  display: inline-flex;
-  align-items: stretch;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-mid);
-  border-radius: 7px;
-  overflow: hidden;
-  font-size: 11.5px;
-  max-width: 100%;
-  animation: attachIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
-  transition: background 200ms ease, border-color 200ms ease, transform 200ms ease;
-}
-.attach-chip:hover {
-  border-color: var(--accent);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.15);
-}
-.attach-chip-selection {
-  background: rgba(99, 102, 241, 0.08);
-}
-.attach-chip-selection .attach-chip-label {
-  font-family: var(--font-mono);
-  letter-spacing: -0.1px;
-}
-.attach-chip.open { width: 100%; flex-direction: column; }
-.attach-chip-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: transparent;
-  border: none;
-  color: var(--accent-glow);
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 0;
-}
-.attach-chip-head:hover { color: var(--t1); }
-.attach-chip-head svg { color: var(--accent); flex-shrink: 0; }
-.attach-chip-label {
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 220px;
-}
-.attach-chip-sub {
-  color: var(--t3);
-  font-weight: 500;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  border-left: 1px solid var(--accent-mid);
-  padding-left: 6px;
-  margin-left: 2px;
-}
-.attach-chip-remove {
-  background: transparent;
-  border: none;
-  border-left: 1px solid var(--accent-mid);
-  color: var(--t3);
-  padding: 0 9px;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  font-family: inherit;
-  align-self: stretch;
-}
-.attach-chip-remove:hover { color: var(--err); background: rgba(248, 113, 113, 0.08); }
-.attach-chip.open .attach-chip-remove {
-  border-left: none;
-  border-top: 1px solid var(--accent-mid);
-  padding: 4px;
-  align-self: flex-end;
-  position: absolute;
-  top: 0;
-  right: 0;
-  border-bottom-left-radius: 6px;
-}
-.attach-chip-preview {
-  margin: 0;
-  padding: 10px 12px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.55;
-  background: rgba(0, 0, 0, 0.3);
-  color: var(--t2);
-  max-height: 200px;
-  overflow: auto;
-  border-top: 1px solid var(--accent-mid);
-  white-space: pre;
-  word-break: normal;
 }
 
 /* ═══════════════════════════════════════════════════════════════

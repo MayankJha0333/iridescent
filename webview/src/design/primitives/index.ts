@@ -7,3 +7,9 @@ export type { IconButtonProps } from "./IconButton";
 export { Kbd } from "./Kbd";
 export { Orb, Spinner } from "./Orb";
 export type { OrbProps } from "./Orb";
+export { RichEditor } from "./RichEditor";
+export type {
+  RichEditorProps,
+  RichEditorHandle,
+  CodeInsert
+} from "./RichEditor";

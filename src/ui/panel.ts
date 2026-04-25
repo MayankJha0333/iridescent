@@ -174,10 +174,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private async onMessage(msg: { type: string; [k: string]: unknown }) {
     switch (msg.type) {
       case "prompt":
-        await this.handlePrompt(
-          String(msg.text ?? ""),
-          Array.isArray(msg.attachments) ? (msg.attachments as Attachment[]) : []
-        );
+        await this.handlePrompt(String(msg.text ?? ""));
         break;
       case "cancel":
         this.orchestrator?.cancel();
@@ -253,12 +250,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "captureSelection":
         this.sendSelectionToChat();
         break;
-      case "readFileSnippet":
-        await this.handleReadFileSnippet(
-          String(msg.path ?? ""),
-          typeof msg.id === "string" ? msg.id : ""
-        );
-        break;
     }
   }
 
@@ -308,31 +299,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       })
       .slice(0, 12);
     this.post({ type: "fileSearchResults", id, results });
-  }
-
-  private async handleReadFileSnippet(relPath: string, id: string) {
-    const root = vscode.workspace.workspaceFolders?.[0];
-    if (!root || !relPath) {
-      this.post({ type: "fileSnippet", id, ok: false, error: "No workspace or path." });
-      return;
-    }
-    try {
-      const uri = vscode.Uri.joinPath(root.uri, relPath);
-      const buf = await vscode.workspace.fs.readFile(uri);
-      const text = new TextDecoder().decode(buf);
-      const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n… [truncated]" : text;
-      this.post({
-        type: "fileSnippet",
-        id,
-        ok: true,
-        path: relPath,
-        text: truncated,
-        bytes: buf.byteLength
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.post({ type: "fileSnippet", id, ok: false, error: msg });
-    }
   }
 
   private async rewindTo(turnId: string) {
@@ -410,9 +376,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     await this.broadcastAuthState();
   }
 
-  private async handlePrompt(text: string, attachments: Attachment[] = []) {
-    const composed = composeUserMessage(text, attachments);
-    if (!composed.trim()) return;
+  private async handlePrompt(text: string) {
+    if (!text.trim()) return;
     const cfg = vscode.workspace.getConfiguration("iridescent");
     const model = cfg.get<string>("model", "claude-sonnet-4-6");
     const maxTokens = cfg.get<number>("maxTokens", 4096);
@@ -509,7 +474,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: "turnStart" });
     try {
-      await this.orchestrator.turn(composed);
+      await this.orchestrator.turn(text);
     } finally {
       this.post({ type: "turnEnd" });
     }
@@ -553,45 +518,6 @@ function makeNonce() {
   let n = "";
   for (let i = 0; i < 32; i++) n += chars[Math.floor(Math.random() * chars.length)];
   return n;
-}
-
-// ── Attachment / message composition ────────────────────────
-
-export type AttachmentKind = "file" | "selection" | "snippet";
-
-export interface Attachment {
-  id: string;
-  kind: AttachmentKind;
-  label: string;
-  path?: string;
-  language?: string;
-  startLine?: number;
-  endLine?: number;
-  text?: string;
-}
-
-/**
- * Build the final user message: the typed text with attachments
- * appended as fenced code blocks below a "Context:" header.
- */
-function composeUserMessage(text: string, attachments: Attachment[]): string {
-  if (!attachments.length) return text;
-  const parts: string[] = [text.trim()];
-  parts.push("\n\n---\nContext attached:");
-  for (const a of attachments) {
-    const heading =
-      a.kind === "file"
-        ? `**${a.path}**`
-        : a.kind === "selection"
-          ? `**${a.path}** (lines ${a.startLine}–${a.endLine})`
-          : `**${a.label}**`;
-    parts.push("\n" + heading);
-    if (a.text) {
-      const fence = "```" + (a.language ?? "");
-      parts.push(`${fence}\n${a.text}\n\`\`\``);
-    }
-  }
-  return parts.join("\n");
 }
 
 /** Strip stray slash prefixes and trailing whitespace from a captured selection. */

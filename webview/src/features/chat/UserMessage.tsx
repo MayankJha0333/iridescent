@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { send } from "../../lib/rpc";
 import { Icon } from "../../design/icons";
 import { renderMarkdown } from "./markdown";
@@ -10,22 +10,8 @@ interface UserMessageProps {
   messagesAfter?: number;
 }
 
-/**
- * Splits a user turn into the typed prose and the auto-appended context
- * trailer that the extension produces when there are attachments
- * (`composeUserMessage` writes a `\n\n---\nContext attached:` separator
- * followed by fenced blocks). The trailer renders as proper code chips,
- * the prose stays as plain text so user-typed `**bold**` doesn't surprise.
- */
-function splitUserTurn(text: string): { prose: string; context: string | null } {
-  const idx = text.indexOf("\n\n---\nContext attached:");
-  if (idx === -1) return { prose: text, context: null };
-  return { prose: text.slice(0, idx).trimEnd(), context: text.slice(idx).trimStart() };
-}
-
 export function UserMessage({ id, text, canRewind, messagesAfter = 0 }: UserMessageProps) {
   const [confirming, setConfirming] = useState(false);
-  const { prose, context } = useMemo(() => splitUserTurn(text), [text]);
 
   const handleConfirm = () => {
     send({ type: "rewindTo", turnId: id });
@@ -35,13 +21,8 @@ export function UserMessage({ id, text, canRewind, messagesAfter = 0 }: UserMess
   return (
     <div className={`msg msg-user${confirming ? " msg-rewinding" : ""}`}>
       <div className="msg-avatar">Y</div>
-      <div className="msg-body">
-        {prose && <div className="msg-text">{prose}</div>}
-        {context && (
-          <div className="msg-context md">
-            {renderMarkdown(stripContextHeader(context))}
-          </div>
-        )}
+      <div className="msg-body md">
+        {renderMarkdown(text)}
         {canRewind && !confirming && (
           <button
             type="button"
@@ -76,16 +57,4 @@ export function UserMessage({ id, text, canRewind, messagesAfter = 0 }: UserMess
       </div>
     </div>
   );
-}
-
-/**
- * Drop the leading `---` rule and the "Context attached:" line from the
- * trailer so the renderer doesn't emit a noisy hr + heading. Each
- * attachment in the trailer becomes a bold filename header followed by a
- * fenced block — both markdown-rendered as a clean code-chip stack.
- */
-function stripContextHeader(s: string): string {
-  return s
-    .replace(/^---\s*\n?/, "")
-    .replace(/^Context attached:\s*\n?/, "");
 }

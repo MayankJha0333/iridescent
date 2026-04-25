@@ -9,10 +9,10 @@ import {
   EditorContext,
   AuthMode,
   PermissionMode,
-  Attachment,
   ModelInfo,
   SkillInfo
 } from "../../lib/rpc";
+import type { CodeInsert } from "../../design/primitives";
 import { Header } from "./Header";
 import { Composer } from "./Composer";
 import { ContextStrip } from "./ContextStrip";
@@ -36,16 +36,14 @@ export interface ChatScreenProps {
   rewind: { restored: number; deleted: number } | null;
   models: ReadonlyArray<ModelInfo>;
   skills: ReadonlyArray<SkillInfo>;
-  attachments: ReadonlyArray<Attachment>;
   composerFocusKey: number;
+  pendingInsert: CodeInsert | null;
+  onInserted: () => void;
   onInput: (v: string) => void;
-  onSubmit: (text: string, attachments: Attachment[]) => void;
+  onSubmit: (text: string) => void;
   onCancel: () => void;
   onDismissError: () => void;
   onDismissRewind: () => void;
-  onAddAttachment: (a: Attachment) => void;
-  onRemoveAttachment: (id: string) => void;
-  onClearAttachments: () => void;
 }
 
 export function ChatScreen({
@@ -61,16 +59,14 @@ export function ChatScreen({
   rewind,
   models,
   skills,
-  attachments,
   composerFocusKey,
+  pendingInsert,
+  onInserted,
   onInput,
   onSubmit,
   onCancel,
   onDismissError,
-  onDismissRewind,
-  onAddAttachment,
-  onRemoveAttachment,
-  onClearAttachments
+  onDismissRewind
 }: ChatScreenProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const userScrolled = useRef(false);
@@ -131,9 +127,9 @@ export function ChatScreen({
         <Composer
           value={input}
           onChange={onInput}
-          onSubmit={(text, atts) => {
+          onSubmit={(text) => {
             userScrolled.current = false;
-            onSubmit(text, atts);
+            onSubmit(text);
           }}
           onCancel={onCancel}
           busy={busy}
@@ -142,11 +138,9 @@ export function ChatScreen({
           permissionMode={permissionMode}
           models={models}
           skills={skills}
-          attachments={attachments}
-          onAddAttachment={onAddAttachment}
-          onRemoveAttachment={onRemoveAttachment}
-          onClearAttachments={onClearAttachments}
           focusKey={composerFocusKey}
+          pendingInsert={pendingInsert}
+          onInserted={onInserted}
         />
       </div>
     </>

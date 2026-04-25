@@ -81,7 +81,7 @@ function Suggestion({ item }: { item: SuggestionItem }) {
     <button
       type="button"
       className="suggestion"
-      onClick={() => send({ type: "prompt", text: item.prompt, attachments: [] })}
+      onClick={() => send({ type: "prompt", text: item.prompt })}
     >
       <span className="suggestion-icon">
         <Icon name={item.icon} size={14} />
