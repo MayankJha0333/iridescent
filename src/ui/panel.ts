@@ -4,7 +4,7 @@ import { Orchestrator } from "../core/orchestrator.js";
 import { defaultTools } from "../tools/index.js";
 import { createGate } from "../core/permissions.js";
 import { PermissionMode, StreamDelta } from "../core/types.js";
-import { SYSTEM_PROMPT } from "./system-prompt.js";
+import { buildSystemPrompt } from "./system-prompt.js";
 import {
   getApiKey,
   storeApiKey,
@@ -33,12 +33,42 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   private initSession() {
     this.session = new Session();
-    this.session.onEvent((e) => this.post({ type: "timeline", event: e }));
+    this.session.onEvent((e) => {
+      this.post({ type: "timeline", event: e });
+      this.trackFileForCheckpoint(e);
+    });
     this.session.onUserTurn(async (eventId) => {
       if (this.checkpoints) {
         await this.checkpoints.captureBefore(eventId);
       }
     });
+  }
+
+  /**
+   * When the agent (or the Claude CLI agent) calls a write/edit tool, snapshot
+   * the file's *current* content into the latest checkpoint so rewind can
+   * restore it. This fires synchronously before the tool actually runs (we
+   * see the tool_call event right before fs.writeFile / CLI Write executes).
+   */
+  private trackFileForCheckpoint(e: { kind: string; body?: string; meta?: Record<string, unknown> }) {
+    if (!this.checkpoints) return;
+    if (e.kind !== "tool_call") return;
+    let input: Record<string, unknown>;
+    try {
+      input = JSON.parse(e.body ?? "{}");
+    } catch {
+      return;
+    }
+    const rel = String(input.path ?? input.file_path ?? input.filePath ?? "");
+    if (!rel) return;
+    const name = String(e.meta?.name ?? "").toLowerCase();
+    // fs_write (api-key flow) + Claude CLI's Write/Edit/MultiEdit/NotebookEdit/Update.
+    if (
+      name === "fs_write" ||
+      /^(write|edit|multiedit|notebookedit|update|create|str_replace_editor)/.test(name)
+    ) {
+      void this.checkpoints.addFileToLatest(rel);
+    }
   }
 
   private ensureCheckpoints(workspaceRoot: string) {
@@ -443,11 +473,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const gate = createGate(permMode, bashAllowlist);
     const tools = defaultTools();
 
+    // Per-turn prompt — pulls in the current workspace root and active editor
+    // so the agent knows it's sitting *inside* the user's project rather
+    // than treating the conversation as a generic chat.
+    const systemPrompt = buildSystemPrompt({
+      workspaceRoot,
+      activeFile: vscode.window.activeTextEditor
+        ? vscode.workspace.asRelativePath(vscode.window.activeTextEditor.document.uri)
+        : undefined,
+      workspaceName: vscode.workspace.workspaceFolders?.[0]?.name
+    });
+
     this.orchestrator = new Orchestrator(this.session, {
       provider: providerInstance,
       model,
       maxTokens,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt,
       tools,
       gate,
       approve: async (req) => {

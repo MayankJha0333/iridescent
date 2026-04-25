@@ -123,7 +123,14 @@ export function App() {
           break;
         case "timeline":
           dispatchTimeline({ type: "append", event: m.event });
-          if (m.event.kind === "assistant") setStreaming("");
+          // The orchestrator flushes streamed text into a real assistant
+          // event right before any tool_use_start, so when we see either an
+          // assistant *or* a tool_call land in the timeline we can safely
+          // drop the live streaming buffer — the content it held is now
+          // anchored above whatever comes next.
+          if (m.event.kind === "assistant" || m.event.kind === "tool_call") {
+            setStreaming("");
+          }
           break;
         case "delta": {
           const d = m.delta;

@@ -314,6 +314,13 @@ html, body, #root {
   gap: 18px;
   scroll-behavior: smooth;
 }
+/* Default flex-shrink for column children is 1, which means a tool card or
+   message will *compress its own content* before the parent decides to
+   scroll. Pin every direct child to its natural height so the column always
+   scrolls instead. */
+.log > * {
+  flex-shrink: 0;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    Empty / hero state
@@ -742,6 +749,32 @@ html, body, #root {
   border-radius: 4px;
   padding: 7px 9px;
 }
+
+/* Bash command body — full command, not the wrapped JSON. Mono, accent
+   tint so it reads like a terminal prompt. */
+.tool-bash-cmd {
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+  padding: 9px 11px;
+  color: var(--accent-glow);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: none;
+  border-left: 2px solid var(--accent);
+  min-height: 20px;
+}
+.tool-bash-desc {
+  font-size: 11px;
+  color: var(--t3);
+  font-style: italic;
+  font-family: var(--font-sans);
+}
+
+/* Hard-floor sizing so the body never collapses below readable height even
+   if the parent flex container gets squeezed. */
+.tool { min-height: 38px; }
+.tool-body { min-height: 28px; }
+.tool-pre { min-height: 18px; }
 .tool-empty {
   font-size: 11.5px;
   color: var(--t4);

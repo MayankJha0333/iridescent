@@ -25,10 +25,13 @@ export class Session {
     this.userTurnHook = fn;
   }
 
-  addUser(text: string) {
+  async addUser(text: string): Promise<TimelineEvent> {
     this.messages.push({ role: "user", content: text });
     const ev = this.emit({ kind: "user", title: "User", body: text });
-    void this.userTurnHook?.(ev.id);
+    // Awaited so checkpoint capture (and any other onUserTurn hooks)
+    // settles before the orchestrator starts firing tool calls.
+    await this.userTurnHook?.(ev.id);
+    return ev;
   }
 
   addAssistantBlocks(blocks: ContentBlock[]) {

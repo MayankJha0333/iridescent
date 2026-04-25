@@ -29,7 +29,10 @@ export class Orchestrator {
   }
 
   async turn(userText: string): Promise<void> {
-    this.session.addUser(userText);
+    // Awaited so checkpoint capture (registered via session.onUserTurn) finishes
+    // before the agent starts firing tool calls. Otherwise the first write
+    // can race the snapshot and we lose pre-state for rewind.
+    await this.session.addUser(userText);
 
     if (this.o.externalToolExecution) {
       await this.runExternal();
@@ -48,22 +51,31 @@ export class Orchestrator {
       tools: []
     };
 
+    // Block stream preserves the order in which the provider produced each
+    // text segment and tool_use. We flush text to the timeline whenever the
+    // agent transitions to a tool call (so "thinking" appears above the
+    // terminal/tool card) and again at end-of-stream for the closing reply.
     const blocks: ContentBlock[] = [];
     let currentTool: { id: string; name: string; inputBuf: string } | null = null;
     const seenAssistantBlockIds = new Set<string>();
+    let textBuf = "";
+
+    const flushText = () => {
+      if (!textBuf) return;
+      blocks.push({ type: "text", text: textBuf });
+      this.session.emit({ kind: "assistant", title: "Assistant", body: textBuf });
+      textBuf = "";
+    };
 
     for await (const delta of this.o.provider.stream(req)) {
       if (this.cancelled) return;
       this.o.onDelta?.(delta);
       switch (delta.type) {
         case "text":
-          if (delta.text) {
-            const last = blocks[blocks.length - 1];
-            if (last && last.type === "text") last.text += delta.text;
-            else blocks.push({ type: "text", text: delta.text });
-          }
+          if (delta.text) textBuf += delta.text;
           break;
         case "tool_use_start":
+          flushText();
           currentTool = { id: delta.tool!.id, name: delta.tool!.name, inputBuf: "" };
           break;
         case "tool_use_input":
@@ -77,13 +89,12 @@ export class Orchestrator {
             } catch {
               input = {};
             }
-            const block: ContentBlock = {
+            blocks.push({
               type: "tool_use",
               id: currentTool.id,
               name: currentTool.name,
               input
-            };
-            blocks.push(block);
+            });
             if (!seenAssistantBlockIds.has(currentTool.id)) {
               seenAssistantBlockIds.add(currentTool.id);
               this.session.emitToolCall(currentTool.id, currentTool.name, input);
@@ -101,17 +112,18 @@ export class Orchestrator {
           }
           break;
         case "error":
+          flushText();
           this.session.emit({ kind: "error", title: "Provider error", body: delta.error });
           return;
       }
     }
 
-    const textBlocks = blocks.filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text");
-    if (textBlocks.length > 0) {
-      this.session.messages.push({ role: "assistant", content: textBlocks });
-      for (const tb of textBlocks) {
-        this.session.emit({ kind: "assistant", title: "Assistant", body: tb.text });
-      }
+    flushText();
+
+    // Persist the full block sequence into messages history (used as
+    // context for any follow-up turn the user sends).
+    if (blocks.length > 0) {
+      this.session.messages.push({ role: "assistant", content: blocks });
     }
   }
 

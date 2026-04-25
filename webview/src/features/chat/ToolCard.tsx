@@ -70,9 +70,13 @@ export function ToolCard({ name, input, result, isError, pending }: ToolCardProp
       </button>
       {open && (
         <div className="tool-body">
-          <Section label="Input">
-            <pre className="tool-pre">{pretty(input)}</pre>
-          </Section>
+          {isBash ? (
+            <BashCommand input={input} />
+          ) : (
+            <Section label="Input">
+              <pre className="tool-pre">{pretty(input)}</pre>
+            </Section>
+          )}
           {result !== undefined &&
             (isBash ? (
               <BashOutput result={result} isError={isError} onCopy={copyResult} copied={copied} />
@@ -125,6 +129,52 @@ function Section({
       {children}
     </div>
   );
+}
+
+function BashCommand({ input }: { input: string }) {
+  // Try strict JSON first; fall back to a forgiving extractor so streamed /
+  // partial JSON (e.g. "{\"command\": \"ls -la") still shows the command
+  // instead of just an opening brace.
+  const { command, description } = parseBashInput(input);
+  if (!command) {
+    return (
+      <Section label="Input">
+        <pre className="tool-pre">{input || "(empty)"}</pre>
+      </Section>
+    );
+  }
+  return (
+    <Section
+      label="Command"
+      action={
+        description ? <span className="tool-bash-desc">{description}</span> : undefined
+      }
+    >
+      <pre className="tool-pre tool-bash-cmd">{command}</pre>
+    </Section>
+  );
+}
+
+function parseBashInput(raw: string): { command: string; description: string } {
+  if (!raw) return { command: "", description: "" };
+  try {
+    const obj = JSON.parse(raw) as { command?: unknown; description?: unknown };
+    return {
+      command: typeof obj.command === "string" ? obj.command : "",
+      description: typeof obj.description === "string" ? obj.description : ""
+    };
+  } catch {
+    // Best-effort: pull "command" string out of partial JSON.
+    const m = raw.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (!m) return { command: "", description: "" };
+    let cmd = m[1];
+    try {
+      cmd = JSON.parse('"' + cmd + '"');
+    } catch {
+      cmd = cmd.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }
+    return { command: cmd, description: "" };
+  }
 }
 
 interface BashOutputProps {
