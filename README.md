@@ -6,9 +6,9 @@ Design doc: `~/.claude/plans/design-and-architect-a-iridescent-planet.md`.
 
 ## Status
 
-MVP scaffold (P0). Working: chat panel, streaming, fs_read / fs_write (with diff preview) / bash tools, permission modes (default / plan / auto / bypass), destructive-action guards, protected-path blocks, inline-edit / explain / refactor / fix-bug commands.
+MVP scaffold (P0). Working: chat panel, streaming, fs_read / fs_write (with diff preview) / bash tools, permission modes (default / plan / auto), destructive-action guards, protected-path blocks, inline-edit / explain / refactor / fix-bug commands, @-mention file picker, Cmd+L send-selection, dynamic model list per provider, attachments, skills overview.
 
-Not yet: embeddings indexer, tree-sitter @-mentions, checkpoints timeline UI, MCP client, subagents, hooks, memory. See plan for roadmap.
+Not yet: embeddings indexer, tree-sitter symbol mentions, checkpoints timeline UI, MCP client, subagents, hooks, memory. See plan for roadmap.
 
 ## Install (dev)
 
@@ -39,7 +39,6 @@ Cycle with `Shift+Tab` (when chat focused) or `Iridescent: Cycle Permission Mode
 | default | Every tool call prompts for approval. |
 | plan | Agent reasons only — no tool execution. |
 | auto | Allowlist: `fs_read` auto-approved; `bash` matching `iridescent.allowedBashPatterns` auto-approved; everything else prompts. |
-| bypass | Non-destructive tools auto-approved. **Destructive actions still prompt.** |
 
 Protected paths (`.git`, `.env*`, `.ssh`, shell rc) always prompt regardless of mode.
 

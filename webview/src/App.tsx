@@ -1,76 +1,127 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { send, onMessage, saveState, loadState } from "./rpc";
-import { AuthGate } from "./AuthGate";
-import { Header } from "./components/Header";
-import { Composer } from "./components/Composer";
-import { UserMessage } from "./components/UserMessage";
-import { AssistantMessage } from "./components/AssistantMessage";
-import { ToolCard } from "./components/ToolCard";
-import { ContextStrip, EditorContext } from "./components/ContextStrip";
+// ─────────────────────────────────────────────────────────────
+// App shell — owns auth state, timeline, and shared composer state
+// (models, skills, attachments). Delegates to <AuthGate> or
+// <ChatScreen> based on auth status.
+// ─────────────────────────────────────────────────────────────
 
-interface TimelineEvent {
-  id: string;
-  ts: number;
-  kind: string;
-  title: string;
-  body?: string;
-  meta?: { id?: string };
-}
+import { useEffect, useReducer, useState } from "react";
+import {
+  send,
+  onMessage,
+  saveState,
+  loadState,
+  newId,
+  AuthMode,
+  PermissionMode,
+  TimelineEvent,
+  EditorContext,
+  Attachment,
+  ModelInfo,
+  SkillInfo
+} from "./lib/rpc";
+import { Spinner } from "./design/primitives";
+import { AuthGate } from "./features/auth/AuthGate";
+import { ChatScreen } from "./features/chat";
+import { FALLBACK_MODELS } from "./features/chat/constants";
 
-interface Delta {
-  type: "text" | "tool_use_start" | "tool_use_input" | "tool_use_end" | "done" | "error";
-  text?: string;
-  tool?: { id: string; name: string };
-  error?: string;
-}
+// ── Auth state ───────────────────────────────────────────────
 
 type AuthState =
   | { status: "loading" }
-  | { status: "unauthed"; mode: string | null; error: string | null; validating: boolean }
-  | { status: "authed"; mode: string; model: string; permissionMode: string };
+  | { status: "unauthed"; mode: AuthMode | null; error: string | null; validating: boolean }
+  | { status: "authed"; mode: AuthMode; model: string; permissionMode: PermissionMode };
 
 interface Persisted {
   events?: TimelineEvent[];
   input?: string;
 }
 
-interface RewindInfo {
-  restored: number;
-  deleted: number;
+// ── Timeline reducer ─────────────────────────────────────────
+
+type TimelineAction =
+  | { type: "reset" }
+  | { type: "append"; event: TimelineEvent }
+  | { type: "replace"; events: TimelineEvent[] };
+
+function timelineReducer(state: TimelineEvent[], action: TimelineAction): TimelineEvent[] {
+  switch (action.type) {
+    case "reset":
+      return [];
+    case "append":
+      return state.some((e) => e.id === action.event.id) ? state : [...state, action.event];
+    case "replace":
+      return action.events;
+  }
 }
+
+// ── Attachments reducer ──────────────────────────────────────
+
+type AttachAction =
+  | { type: "add"; attachment: Attachment }
+  | { type: "update"; id: string; patch: Partial<Attachment> }
+  | { type: "remove"; id: string }
+  | { type: "clear" };
+
+function attachmentsReducer(state: Attachment[], action: AttachAction): Attachment[] {
+  switch (action.type) {
+    case "add":
+      return state.some((a) => a.id === action.attachment.id) ? state : [...state, action.attachment];
+    case "update":
+      return state.map((a) => (a.id === action.id ? { ...a, ...action.patch } : a));
+    case "remove":
+      return state.filter((a) => a.id !== action.id);
+    case "clear":
+      return [];
+  }
+}
+
+// ── Component ────────────────────────────────────────────────
 
 export function App() {
   const initial = loadState<Persisted>() ?? {};
+
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
-  const [events, setEvents] = useState<TimelineEvent[]>(initial.events ?? []);
+  const [events, dispatchTimeline] = useReducer(timelineReducer, initial.events ?? []);
   const [streaming, setStreaming] = useState("");
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState(initial.input ?? "");
   const [error, setError] = useState<string | null>(null);
   const [editorContext, setEditorContext] = useState<EditorContext | null>(null);
-  const [lastRewind, setLastRewind] = useState<RewindInfo | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-  const userScrolled = useRef(false);
+  const [rewind, setRewind] = useState<{ restored: number; deleted: number } | null>(null);
+  const [models, setModels] = useState<ModelInfo[]>([...FALLBACK_MODELS]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [attachments, dispatchAttachments] = useReducer(attachmentsReducer, []);
+  const [composerFocusKey, setComposerFocusKey] = useState(0);
 
+  // Persist non-volatile UI state.
   useEffect(() => {
     saveState<Persisted>({ events, input });
   }, [events, input]);
 
+  // Single inbound message handler.
   useEffect(() => {
-    const off = onMessage<any>((m) => {
+    const off = onMessage((m) => {
       switch (m.type) {
-        case "auth":
-          setAuth(
-            m.authed
-              ? {
-                  status: "authed",
-                  mode: m.mode,
-                  model: m.model,
-                  permissionMode: m.permissionMode ?? "default"
-                }
-              : { status: "unauthed", mode: m.mode ?? null, error: null, validating: false }
-          );
+        case "auth": {
+          if (m.authed && m.mode && m.model) {
+            setAuth({
+              status: "authed",
+              mode: m.mode,
+              model: m.model,
+              permissionMode: m.permissionMode ?? "default"
+            });
+            send({ type: "requestModels" });
+            send({ type: "requestSkills" });
+          } else {
+            setAuth({
+              status: "unauthed",
+              mode: m.mode ?? null,
+              error: null,
+              validating: false
+            });
+          }
           break;
+        }
         case "authValidating":
           setAuth((a) =>
             a.status === "unauthed" ? { ...a, validating: true, error: null } : a
@@ -88,21 +139,19 @@ export function App() {
           setError(null);
           break;
         case "reset":
-          setEvents([]);
+          dispatchTimeline({ type: "reset" });
+          dispatchAttachments({ type: "clear" });
           setStreaming("");
           setError(null);
-          userScrolled.current = false;
           break;
         case "timeline":
-          setEvents((prev) =>
-            prev.some((e) => e.id === m.event.id) ? prev : [...prev, m.event]
-          );
+          dispatchTimeline({ type: "append", event: m.event });
           if (m.event.kind === "assistant") setStreaming("");
           break;
         case "delta": {
-          const d: Delta = m.delta;
-          if (d.type === "text" && d.text) setStreaming((s) => s + d.text);
-          if (d.type === "error") setError(d.error ?? "error");
+          const d = m.delta;
+          if (d.type === "text") setStreaming((s) => s + d.text);
+          else if (d.type === "error") setError(d.error);
           break;
         }
         case "turnStart":
@@ -122,11 +171,52 @@ export function App() {
           setEditorContext(m.context ?? null);
           break;
         case "rewind":
-          setEvents(m.events ?? []);
+          dispatchTimeline({ type: "replace", events: m.events });
           setStreaming("");
           setError(null);
-          userScrolled.current = false;
-          setLastRewind({ restored: m.restored ?? 0, deleted: m.deleted ?? 0 });
+          setRewind({ restored: m.restored, deleted: m.deleted });
+          break;
+        case "models":
+          if (m.models.length) setModels(m.models);
+          break;
+        case "skills":
+          setSkills(m.skills);
+          break;
+        case "fileSnippet":
+          if (m.ok && m.text !== undefined) {
+            dispatchAttachments({
+              type: "update",
+              id: m.id,
+              patch: { text: m.text }
+            });
+          } else if (!m.ok) {
+            // Failed to read — drop the attachment so the user isn't confused.
+            dispatchAttachments({ type: "remove", id: m.id });
+            if (m.error) setError(m.error);
+          }
+          break;
+        case "insertSelection": {
+          // Cmd+L → add a code-snippet chip to the composer's attachment
+          // bar (rendered above the textarea). The chip carries the
+          // selected text so the user sees it as a discrete block instead
+          // of raw markdown in their prompt.
+          const att: Attachment = {
+            id: newId(),
+            kind: "selection",
+            label: m.file.split("/").pop() ?? m.file,
+            path: m.file,
+            language: m.language,
+            startLine: m.startLine,
+            endLine: m.endLine,
+            text: m.text
+          };
+          dispatchAttachments({ type: "add", attachment: att });
+          setComposerFocusKey((k) => k + 1);
+          break;
+        }
+        case "cliStatus":
+        case "fileSearchResults":
+          // Consumed by the AuthGate / MentionPopover via their own subscriptions.
           break;
       }
     });
@@ -135,26 +225,11 @@ export function App() {
     return off;
   }, []);
 
-  useEffect(() => {
-    if (userScrolled.current) return;
-    const el = logRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [events, streaming]);
-
-  const onScroll = () => {
-    const el = logRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    userScrolled.current = !nearBottom;
-  };
-
-  const grouped = useMemo(() => groupEvents(events), [events]);
-
   if (auth.status === "loading") {
     return (
       <div className="app">
         <div className="loading">
-          <div className="loading-pulse">✦</div>
+          <Spinner size={48} />
         </div>
       </div>
     );
@@ -168,219 +243,35 @@ export function App() {
     );
   }
 
-  const submit = () => {
-    const t = input.trim();
-    if (!t || busy) return;
-    send({ type: "prompt", text: t });
-    setInput("");
-    userScrolled.current = false;
-  };
-
   return (
     <div className="app">
-      <Header
-        mode={auth.mode}
+      <ChatScreen
+        authMode={auth.mode}
         model={auth.model}
         permissionMode={auth.permissionMode}
+        events={events}
+        streaming={streaming}
         busy={busy}
+        input={input}
+        error={error}
+        editorContext={editorContext}
+        rewind={rewind}
+        models={models}
+        skills={skills}
+        attachments={attachments}
+        composerFocusKey={composerFocusKey}
+        onInput={setInput}
+        onSubmit={(text, atts) => {
+          send({ type: "prompt", text, attachments: atts });
+          setInput("");
+        }}
+        onCancel={() => send({ type: "cancel" })}
+        onDismissError={() => setError(null)}
+        onDismissRewind={() => setRewind(null)}
+        onAddAttachment={(a) => dispatchAttachments({ type: "add", attachment: a })}
+        onRemoveAttachment={(id) => dispatchAttachments({ type: "remove", id })}
+        onClearAttachments={() => dispatchAttachments({ type: "clear" })}
       />
-
-      <div className="log" ref={logRef} onScroll={onScroll}>
-        {grouped.length === 0 && !streaming && <EmptyState />}
-        {grouped.map((g, i) => renderGroup(g, i, grouped))}
-        {lastRewind && (
-          <RewindMarker
-            restored={lastRewind.restored}
-            deleted={lastRewind.deleted}
-            onDismiss={() => setLastRewind(null)}
-          />
-        )}
-        {streaming && <AssistantMessage text={streaming} streaming />}
-        {error && <ErrorBanner text={error} onDismiss={() => setError(null)} />}
-      </div>
-
-      {userScrolled.current && (
-        <button
-          className="scroll-fab"
-          onClick={() => {
-            userScrolled.current = false;
-            logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-          }}
-        >
-          ↓
-        </button>
-      )}
-
-      <div className="composer-shell">
-        <ContextStrip context={editorContext} />
-        <Composer
-          value={input}
-          onChange={setInput}
-          onSubmit={submit}
-          onCancel={() => send({ type: "cancel" })}
-          busy={busy}
-          mode={auth.mode}
-        />
-      </div>
-    </div>
-  );
-}
-
-type Group =
-  | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; text: string }
-  | { kind: "tool"; id: string; name: string; input: string; result?: string; isError?: boolean };
-
-function groupEvents(events: TimelineEvent[]): Group[] {
-  const groups: Group[] = [];
-  const toolById = new Map<string, Group & { kind: "tool" }>();
-
-  for (const e of events) {
-    if (e.kind === "user") {
-      groups.push({ kind: "user", id: e.id, text: e.body ?? "" });
-    } else if (e.kind === "assistant") {
-      const last = groups[groups.length - 1];
-      if (last && last.kind === "assistant") {
-        last.text += "\n\n" + (e.body ?? "");
-      } else {
-        groups.push({ kind: "assistant", id: e.id, text: e.body ?? "" });
-      }
-    } else if (e.kind === "tool_call") {
-      const name = e.title.replace(/^Tool:\s*/, "");
-      const g: Group & { kind: "tool" } = {
-        kind: "tool",
-        id: e.id,
-        name,
-        input: e.body ?? "{}"
-      };
-      groups.push(g);
-      const tid = e.meta?.id;
-      if (tid) toolById.set(tid, g);
-    } else if (e.kind === "tool_result") {
-      const tid = e.meta?.id;
-      const target = tid ? toolById.get(tid) : undefined;
-      if (target) {
-        target.result = e.body ?? "";
-        target.isError = e.title === "Tool Error";
-      } else {
-        groups.push({
-          kind: "tool",
-          id: e.id,
-          name: "result",
-          input: "{}",
-          result: e.body ?? "",
-          isError: e.title === "Tool Error"
-        });
-      }
-    }
-  }
-  return groups;
-}
-
-function renderGroup(g: Group, idx: number, all: Group[]) {
-  if (g.kind === "user") {
-    const messagesAfter = all.length - idx - 1;
-    return (
-      <UserMessage
-        key={g.id}
-        id={g.id}
-        text={g.text}
-        canRewind
-        messagesAfter={messagesAfter}
-      />
-    );
-  }
-  if (g.kind === "assistant") return <AssistantMessage key={g.id} text={g.text} />;
-  return (
-    <ToolCard
-      key={g.id}
-      name={g.name}
-      input={g.input}
-      result={g.result}
-      isError={g.isError}
-      pending={g.result === undefined}
-    />
-  );
-}
-
-function RewindMarker({
-  restored,
-  deleted,
-  onDismiss
-}: {
-  restored: number;
-  deleted: number;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="rewind-marker">
-      <div className="rewind-marker-line" />
-      <div className="rewind-marker-body">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="1 4 1 10 7 10" />
-          <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
-        </svg>
-        <span>
-          Rewound —{" "}
-          {restored > 0 && `${restored} file${restored !== 1 ? "s" : ""} restored`}
-          {restored > 0 && deleted > 0 && ", "}
-          {deleted > 0 && `${deleted} deleted`}
-          {restored === 0 && deleted === 0 && "no file changes"}
-        </span>
-        <button className="rewind-marker-dismiss" onClick={onDismiss} aria-label="Dismiss">
-          ×
-        </button>
-      </div>
-      <div className="rewind-marker-line" />
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="empty">
-      <div className="empty-logo">✦</div>
-      <div className="empty-title">How can I help?</div>
-      <div className="empty-suggestions">
-        <Suggestion text="Explain this codebase" />
-        <Suggestion text="Find and fix a bug" />
-        <Suggestion text="Write tests for the selected file" />
-        <Suggestion text="Refactor for clarity" />
-      </div>
-    </div>
-  );
-}
-
-function Suggestion({ text }: { text: string }) {
-  return (
-    <button className="suggestion" onClick={() => send({ type: "prompt", text })}>
-      {text}
-    </button>
-  );
-}
-
-function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () => void }) {
-  const isRateLimit = /429|rate.?limit/i.test(text);
-  const isAuth = /401|403|auth rejected/i.test(text);
-  return (
-    <div className="error-banner">
-      <div className="error-head">
-        <span className="error-icon">{isRateLimit ? "⏱" : isAuth ? "🔒" : "⚠"}</span>
-        <span className="error-title">
-          {isRateLimit ? "Rate limited" : isAuth ? "Authentication failed" : "Error"}
-        </span>
-        <button className="error-dismiss" onClick={onDismiss} aria-label="Dismiss">
-          ×
-        </button>
-      </div>
-      <div className="error-body">{text}</div>
-      {(isAuth || isRateLimit) && (
-        <div className="error-actions">
-          <button onClick={() => send({ type: "authReset" })}>
-            {isRateLimit ? "Switch auth" : "Logout & Reconnect"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

@@ -36,15 +36,6 @@ describe("permission gate", () => {
     destructive
   });
 
-  it("bypass allows non-destructive, still confirms destructive", async () => {
-    const gate = createGate("bypass", []);
-    const approve = vi.fn().mockResolvedValue("once");
-    expect(await check(gate, req("bash"), approve)).toBe(true);
-    expect(approve).not.toHaveBeenCalled();
-    expect(await check(gate, req("bash", true), approve)).toBe(true);
-    expect(approve).toHaveBeenCalledOnce();
-  });
-
   it("plan mode denies all tool use", async () => {
     const gate = createGate("plan", []);
     const approve = vi.fn().mockResolvedValue("once");

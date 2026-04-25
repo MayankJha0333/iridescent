@@ -69,15 +69,6 @@ describe("claude-cli buildArgs", () => {
     expect(args[idx + 1]).toBe("acceptEdits");
   });
 
-  it("maps permissionMode bypass -> bypassPermissions", () => {
-    const args = buildArgs("hi", "", {
-      binary: "claude",
-      cwd: "/tmp",
-      permissionMode: "bypass"
-    });
-    expect(args).toContain("bypassPermissions");
-  });
-
   it("maps permissionMode plan -> plan", () => {
     const args = buildArgs("hi", "", {
       binary: "claude",

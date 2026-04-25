@@ -148,8 +148,6 @@ function mapPermissionMode(m: PermissionMode): string {
       return "plan";
     case "auto":
       return "acceptEdits";
-    case "bypass":
-      return "bypassPermissions";
     default:
       return "default";
   }

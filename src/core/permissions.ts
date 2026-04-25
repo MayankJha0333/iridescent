@@ -61,8 +61,6 @@ export async function check(
 
   if (gate.mode === "plan") return false;
 
-  if (gate.mode === "bypass") return true;
-
   if (gate.allowed.has(req.tool)) return true;
 
   if (gate.mode === "auto") {

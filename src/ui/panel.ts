@@ -112,6 +112,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       model,
       permissionMode
     });
+    if (authed) {
+      await this.broadcastModels();
+      this.broadcastSkills();
+    }
   }
 
   reveal() {
@@ -133,6 +137,36 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     await this.handlePrompt(text);
   }
 
+  /**
+   * Cmd+L: pull the active editor's selection (or current line if no
+   * selection) and surface it inside the composer as a clean attachment.
+   * Strips stray slash prefixes and other formatting artifacts.
+   */
+  sendSelectionToChat() {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) {
+      vscode.window.showInformationMessage("Iridescent: open a file first.");
+      return;
+    }
+    const sel = ed.selection;
+    const range = sel.isEmpty ? ed.document.lineAt(sel.active.line).range : sel;
+    const raw = ed.document.getText(range);
+    const cleaned = cleanSelection(raw);
+    if (!cleaned) {
+      vscode.window.showInformationMessage("Iridescent: selection is empty.");
+      return;
+    }
+    this.reveal();
+    this.post({
+      type: "insertSelection",
+      file: vscode.workspace.asRelativePath(ed.document.uri),
+      language: ed.document.languageId,
+      startLine: range.start.line + 1,
+      endLine: range.end.line + 1,
+      text: cleaned
+    });
+  }
+
   private replayTimeline() {
     for (const e of this.session.timeline) this.post({ type: "timeline", event: e });
   }
@@ -140,7 +174,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private async onMessage(msg: { type: string; [k: string]: unknown }) {
     switch (msg.type) {
       case "prompt":
-        await this.handlePrompt(String(msg.text ?? ""));
+        await this.handlePrompt(
+          String(msg.text ?? ""),
+          Array.isArray(msg.attachments) ? (msg.attachments as Attachment[]) : []
+        );
         break;
       case "cancel":
         this.orchestrator?.cancel();
@@ -201,6 +238,100 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "refreshEditorContext":
         this.broadcastEditorContext();
         break;
+      case "requestModels":
+        await this.broadcastModels();
+        break;
+      case "requestSkills":
+        this.broadcastSkills();
+        break;
+      case "requestFileSearch":
+        await this.handleFileSearch(
+          String(msg.query ?? ""),
+          typeof msg.id === "string" ? msg.id : ""
+        );
+        break;
+      case "captureSelection":
+        this.sendSelectionToChat();
+        break;
+      case "readFileSnippet":
+        await this.handleReadFileSnippet(
+          String(msg.path ?? ""),
+          typeof msg.id === "string" ? msg.id : ""
+        );
+        break;
+    }
+  }
+
+  // ── Models / skills / search ─────────────────────────────────
+
+  private async broadcastModels() {
+    const mode = getAuthMode(this.ctx);
+    this.post({
+      type: "models",
+      models: availableModels(mode),
+      authMode: mode ?? null
+    });
+  }
+
+  private broadcastSkills() {
+    const mode = getAuthMode(this.ctx);
+    this.post({ type: "skills", skills: availableSkills(mode) });
+  }
+
+  private async handleFileSearch(query: string, id: string) {
+    const root = vscode.workspace.workspaceFolders?.[0];
+    if (!root) {
+      this.post({ type: "fileSearchResults", id, results: [] });
+      return;
+    }
+    const glob = query ? `**/*${escapeGlob(query)}*` : "**/*";
+    const found = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(root, glob),
+      "**/{node_modules,.git,dist,build,out,.next,.venv,__pycache__}/**",
+      40
+    );
+    const q = query.toLowerCase();
+    const results = found
+      .map((u) => ({
+        path: vscode.workspace.asRelativePath(u),
+        name: u.path.split("/").pop() ?? ""
+      }))
+      .sort((a, b) => {
+        const an = a.name.toLowerCase();
+        const bn = b.name.toLowerCase();
+        if (q) {
+          const aMatch = an.startsWith(q) ? 0 : an.includes(q) ? 1 : 2;
+          const bMatch = bn.startsWith(q) ? 0 : bn.includes(q) ? 1 : 2;
+          if (aMatch !== bMatch) return aMatch - bMatch;
+        }
+        return a.path.localeCompare(b.path);
+      })
+      .slice(0, 12);
+    this.post({ type: "fileSearchResults", id, results });
+  }
+
+  private async handleReadFileSnippet(relPath: string, id: string) {
+    const root = vscode.workspace.workspaceFolders?.[0];
+    if (!root || !relPath) {
+      this.post({ type: "fileSnippet", id, ok: false, error: "No workspace or path." });
+      return;
+    }
+    try {
+      const uri = vscode.Uri.joinPath(root.uri, relPath);
+      const buf = await vscode.workspace.fs.readFile(uri);
+      const text = new TextDecoder().decode(buf);
+      const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n… [truncated]" : text;
+      this.post({
+        type: "fileSnippet",
+        id,
+        ok: true,
+        path: relPath,
+        text: truncated,
+        bytes: buf.byteLength
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.post({ type: "fileSnippet", id, ok: false, error: msg });
     }
   }
 
@@ -279,8 +410,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     await this.broadcastAuthState();
   }
 
-  private async handlePrompt(text: string) {
-    if (!text.trim()) return;
+  private async handlePrompt(text: string, attachments: Attachment[] = []) {
+    const composed = composeUserMessage(text, attachments);
+    if (!composed.trim()) return;
     const cfg = vscode.workspace.getConfiguration("iridescent");
     const model = cfg.get<string>("model", "claude-sonnet-4-6");
     const maxTokens = cfg.get<number>("maxTokens", 4096);
@@ -377,7 +509,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: "turnStart" });
     try {
-      await this.orchestrator.turn(text);
+      await this.orchestrator.turn(composed);
     } finally {
       this.post({ type: "turnEnd" });
     }
@@ -394,10 +526,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const nonce = makeNonce();
     const csp = [
       `default-src 'none'`,
-      `style-src ${webview.cspSource} 'unsafe-inline'`,
+      `style-src ${webview.cspSource} 'unsafe-inline' https://fonts.googleapis.com`,
       `script-src 'nonce-${nonce}'`,
       `img-src ${webview.cspSource} data:`,
-      `font-src ${webview.cspSource}`
+      `font-src ${webview.cspSource} https://fonts.gstatic.com`,
+      `connect-src https://fonts.googleapis.com https://fonts.gstatic.com`
     ].join("; ");
     return `<!doctype html>
 <html>
@@ -420,6 +553,155 @@ function makeNonce() {
   let n = "";
   for (let i = 0; i < 32; i++) n += chars[Math.floor(Math.random() * chars.length)];
   return n;
+}
+
+// ── Attachment / message composition ────────────────────────
+
+export type AttachmentKind = "file" | "selection" | "snippet";
+
+export interface Attachment {
+  id: string;
+  kind: AttachmentKind;
+  label: string;
+  path?: string;
+  language?: string;
+  startLine?: number;
+  endLine?: number;
+  text?: string;
+}
+
+/**
+ * Build the final user message: the typed text with attachments
+ * appended as fenced code blocks below a "Context:" header.
+ */
+function composeUserMessage(text: string, attachments: Attachment[]): string {
+  if (!attachments.length) return text;
+  const parts: string[] = [text.trim()];
+  parts.push("\n\n---\nContext attached:");
+  for (const a of attachments) {
+    const heading =
+      a.kind === "file"
+        ? `**${a.path}**`
+        : a.kind === "selection"
+          ? `**${a.path}** (lines ${a.startLine}–${a.endLine})`
+          : `**${a.label}**`;
+    parts.push("\n" + heading);
+    if (a.text) {
+      const fence = "```" + (a.language ?? "");
+      parts.push(`${fence}\n${a.text}\n\`\`\``);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** Strip stray slash prefixes and trailing whitespace from a captured selection. */
+function cleanSelection(raw: string): string {
+  // Drop a leading line that is purely a slash command (e.g. "/explain").
+  const lines = raw.split(/\r?\n/);
+  if (lines.length && /^\s*\/\S/.test(lines[0]) && !lines[0].includes("//")) {
+    lines.shift();
+  }
+  // Trim trailing blank lines but keep interior whitespace.
+  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  return lines.join("\n");
+}
+
+function escapeGlob(s: string): string {
+  return s.replace(/[\[\]{}*?!()]/g, "\\$&");
+}
+
+// ── Models / skills catalogs ─────────────────────────────────
+
+export type ModelGroup = "alias" | "version";
+
+export interface ModelInfo {
+  value: string;
+  label: string;
+  note: string;
+  supportsTools: boolean;
+  group: ModelGroup;
+}
+
+/**
+ * Models surfaced in the picker, sourced from Claude Code's model-config docs.
+ *
+ * Two groups:
+ *  - **alias**   — Claude Code CLI shorthands (`opus`, `sonnet`, `haiku`,
+ *                  `opusplan`, `default`). Subscription mode only.
+ *  - **version** — pinned IDs the Messages API accepts directly. Includes
+ *                  `[1m]` variants for the two models with 1M context.
+ *
+ * Aliases are a CLI convention (rejected by the raw Messages API), so they're
+ * gated to subscription mode. The `[1m]` suffix is also a CLI convention —
+ * the Messages API uses the `context-1m-2025-08-07` beta header instead — so
+ * those variants only show in subscription mode.
+ *
+ * Reference: https://code.claude.com/docs/en/model-config
+ */
+function availableModels(authMode: AuthMode | undefined): ModelInfo[] {
+  if (authMode !== "subscription") {
+    // api-key mode → canonical Messages API IDs only, no aliases, no [1m].
+    return [
+      { value: "claude-opus-4-7",   label: "Opus 4.7",   note: "best reasoning",     supportsTools: true, group: "version" },
+      { value: "claude-sonnet-4-6", label: "Sonnet 4.6", note: "balanced",           supportsTools: true, group: "version" },
+      { value: "claude-haiku-4-5",  label: "Haiku 4.5",  note: "fastest · low cost", supportsTools: true, group: "version" }
+    ];
+  }
+
+  // Subscription (Claude Code CLI). Aliases first (the recommended path),
+  // then explicit versions including the two 1M-context variants.
+  return [
+    { value: "default",  label: "Default",     note: "your plan's recommended model",                supportsTools: true, group: "alias" },
+    { value: "opus",     label: "Opus",        note: "latest Opus · complex reasoning",              supportsTools: true, group: "alias" },
+    { value: "sonnet",   label: "Sonnet",      note: "latest Sonnet · daily coding",                 supportsTools: true, group: "alias" },
+    { value: "haiku",    label: "Haiku",       note: "latest Haiku · simple tasks",                  supportsTools: true, group: "alias" },
+    { value: "opusplan", label: "Opus + Plan", note: "Opus while planning, Sonnet while executing",  supportsTools: true, group: "alias" },
+
+    { value: "claude-opus-4-7",        label: "Opus 4.7",        note: "current Opus",      supportsTools: true, group: "version" },
+    { value: "claude-opus-4-7[1m]",    label: "Opus 4.7 · 1M",   note: "Opus 4.7 + 1M context window",   supportsTools: true, group: "version" },
+    { value: "claude-sonnet-4-6",      label: "Sonnet 4.6",      note: "current Sonnet",    supportsTools: true, group: "version" },
+    { value: "claude-sonnet-4-6[1m]",  label: "Sonnet 4.6 · 1M", note: "Sonnet 4.6 + 1M context window", supportsTools: true, group: "version" },
+    { value: "claude-haiku-4-5",       label: "Haiku 4.5",       note: "current Haiku",     supportsTools: true, group: "version" }
+  ];
+}
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  category: "tool" | "skill" | "integration";
+  description: string;
+  enabled: boolean;
+  toggleable: boolean;
+  external?: boolean;
+}
+
+/** Skills surfaced in the chat composer. Mirrors Claude Code's tool taxonomy. */
+function availableSkills(authMode: AuthMode | undefined): SkillInfo[] {
+  // Always-on tools shipped by Iridescent.
+  const tools: SkillInfo[] = [
+    { id: "fs_read",  name: "Read",  category: "tool", description: "Read files in the workspace", enabled: true,  toggleable: false },
+    { id: "fs_write", name: "Write", category: "tool", description: "Create and edit files",        enabled: true,  toggleable: false },
+    { id: "bash",    name: "Bash",  category: "tool", description: "Run shell commands",           enabled: true,  toggleable: false }
+  ];
+
+  // Capabilities surfaced by Claude Code itself when running in subscription
+  // (CLI) mode. Marked `external` because they execute inside the CLI agent.
+  const claudeCode: SkillInfo[] = authMode === "subscription"
+    ? [
+        { id: "Glob",       name: "Glob",       category: "skill", description: "Find files by glob pattern", enabled: true, toggleable: false, external: true },
+        { id: "Grep",       name: "Grep",       category: "skill", description: "Search file contents",        enabled: true, toggleable: false, external: true },
+        { id: "Edit",       name: "Edit",       category: "skill", description: "Targeted in-file edits",       enabled: true, toggleable: false, external: true },
+        { id: "WebFetch",   name: "WebFetch",   category: "skill", description: "Fetch and read URLs",          enabled: true, toggleable: false, external: true },
+        { id: "Task",       name: "Sub-agents", category: "skill", description: "Spawn parallel sub-agents",    enabled: true, toggleable: false, external: true }
+      ]
+    : [];
+
+  // Optional integrations (placeholder — not yet wired).
+  const integrations: SkillInfo[] = [
+    { id: "mcp", name: "MCP Servers", category: "integration", description: "Model Context Protocol servers (configure to enable)", enabled: false, toggleable: false }
+  ];
+
+  return [...tools, ...claudeCode, ...integrations];
 }
 
 export type { AuthMode };

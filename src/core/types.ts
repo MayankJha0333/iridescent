@@ -40,7 +40,7 @@ export interface ToolContext {
   emit: (event: TimelineEvent) => void;
 }
 
-export type PermissionMode = "default" | "plan" | "auto" | "bypass";
+export type PermissionMode = "default" | "plan" | "auto";
 
 export interface StreamDelta {
   type:

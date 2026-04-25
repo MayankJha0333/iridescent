@@ -1,3 +1,12 @@
+// ─────────────────────────────────────────────────────────────
+// Lightweight markdown renderer. Supports:
+//   - fenced code blocks ``` with language + copy button
+//   - headings (#–######)
+//   - unordered (-, *) and ordered (1.) lists
+//   - inline code, bold, italic, links
+// Intentionally small — no remark/HTML parsing in the webview.
+// ─────────────────────────────────────────────────────────────
+
 import { ReactNode, useState } from "react";
 
 export function renderMarkdown(src: string): ReactNode[] {
@@ -22,11 +31,15 @@ export function renderMarkdown(src: string): ReactNode[] {
       continue;
     }
 
-    if (/^#{1,6}\s/.test(line)) {
-      const m = line.match(/^(#{1,6})\s+(.*)$/)!;
-      const level = m[1].length;
-      const Tag = `h${Math.min(level + 2, 6)}` as "h3" | "h4" | "h5" | "h6";
-      out.push(<Tag key={key++} className="md-h">{inline(m[2], key)}</Tag>);
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length + 2, 6);
+      const Tag = `h${level}` as "h3" | "h4" | "h5" | "h6";
+      out.push(
+        <Tag key={key++} className="md-h">
+          {inline(heading[2], key)}
+        </Tag>
+      );
       i++;
       continue;
     }
@@ -34,20 +47,32 @@ export function renderMarkdown(src: string): ReactNode[] {
     if (/^[-*]\s/.test(line)) {
       const items: ReactNode[] = [];
       while (i < lines.length && /^[-*]\s/.test(lines[i])) {
-        items.push(<li key={`li-${key++}`}>{inline(lines[i].replace(/^[-*]\s/, ""), key)}</li>);
+        items.push(
+          <li key={`li-${key++}`}>{inline(lines[i].replace(/^[-*]\s/, ""), key)}</li>
+        );
         i++;
       }
-      out.push(<ul key={key++} className="md-ul">{items}</ul>);
+      out.push(
+        <ul key={key++} className="md-ul">
+          {items}
+        </ul>
+      );
       continue;
     }
 
     if (/^\d+\.\s/.test(line)) {
       const items: ReactNode[] = [];
       while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
-        items.push(<li key={`oli-${key++}`}>{inline(lines[i].replace(/^\d+\.\s/, ""), key)}</li>);
+        items.push(
+          <li key={`oli-${key++}`}>{inline(lines[i].replace(/^\d+\.\s/, ""), key)}</li>
+        );
         i++;
       }
-      out.push(<ol key={key++} className="md-ol">{items}</ol>);
+      out.push(
+        <ol key={key++} className="md-ol">
+          {items}
+        </ol>
+      );
       continue;
     }
 
@@ -68,7 +93,11 @@ export function renderMarkdown(src: string): ReactNode[] {
       para.push(lines[i]);
       i++;
     }
-    out.push(<p key={key++} className="md-p">{inline(para.join(" "), key)}</p>);
+    out.push(
+      <p key={key++} className="md-p">
+        {inline(para.join(" "), key)}
+      </p>
+    );
   }
 
   return out;
@@ -94,7 +123,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
     <div className="md-code-wrap">
       <div className="md-code-bar">
         <span className="md-code-lang">{lang || "text"}</span>
-        <button className="md-code-copy" onClick={copy}>
+        <button type="button" className="md-code-copy" onClick={copy}>
           {copied ? "✓ copied" : "copy"}
         </button>
       </div>
@@ -105,32 +134,37 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   );
 }
 
+interface InlinePattern {
+  re: RegExp;
+  wrap: (m: RegExpExecArray, k: string) => ReactNode;
+}
+
+const PATTERNS: ReadonlyArray<InlinePattern> = [
+  { re: /`([^`]+)`/, wrap: (m, k) => <code className="md-ic" key={k}>{m[1]}</code> },
+  { re: /\*\*([^*]+)\*\*/, wrap: (m, k) => <strong key={k}>{m[1]}</strong> },
+  { re: /\*([^*]+)\*/, wrap: (m, k) => <em key={k}>{m[1]}</em> },
+  { re: /_([^_]+)_/, wrap: (m, k) => <em key={k}>{m[1]}</em> },
+  {
+    re: /\[([^\]]+)\]\(([^)]+)\)/,
+    wrap: (m, k) => (
+      <a key={k} href={m[2]} target="_blank" rel="noreferrer">
+        {m[1]}
+      </a>
+    )
+  }
+];
+
 function inline(text: string, keyBase: number): ReactNode[] {
   const nodes: ReactNode[] = [];
   let rest = text;
-  let localKey = 0;
-
-  const patterns: Array<{ re: RegExp; wrap: (m: RegExpExecArray) => ReactNode }> = [
-    { re: /`([^`]+)`/, wrap: (m) => <code className="md-ic" key={`${keyBase}-${localKey++}`}>{m[1]}</code> },
-    { re: /\*\*([^*]+)\*\*/, wrap: (m) => <strong key={`${keyBase}-${localKey++}`}>{m[1]}</strong> },
-    { re: /\*([^*]+)\*/, wrap: (m) => <em key={`${keyBase}-${localKey++}`}>{m[1]}</em> },
-    { re: /_([^_]+)_/, wrap: (m) => <em key={`${keyBase}-${localKey++}`}>{m[1]}</em> },
-    {
-      re: /\[([^\]]+)\]\(([^)]+)\)/,
-      wrap: (m) => (
-        <a key={`${keyBase}-${localKey++}`} href={m[2]} target="_blank" rel="noreferrer">
-          {m[1]}
-        </a>
-      )
-    }
-  ];
+  let local = 0;
 
   while (rest.length > 0) {
-    let earliest: { idx: number; match: RegExpExecArray; wrap: (m: RegExpExecArray) => ReactNode } | null = null;
-    for (const p of patterns) {
+    let earliest: { idx: number; match: RegExpExecArray; pat: InlinePattern } | null = null;
+    for (const p of PATTERNS) {
       const m = p.re.exec(rest);
       if (m && (earliest === null || m.index < earliest.idx)) {
-        earliest = { idx: m.index, match: m, wrap: p.wrap };
+        earliest = { idx: m.index, match: m, pat: p };
       }
     }
     if (!earliest) {
@@ -138,7 +172,7 @@ function inline(text: string, keyBase: number): ReactNode[] {
       break;
     }
     if (earliest.idx > 0) nodes.push(rest.slice(0, earliest.idx));
-    nodes.push(earliest.wrap(earliest.match));
+    nodes.push(earliest.pat.wrap(earliest.match, `${keyBase}-${local++}`));
     rest = rest.slice(earliest.idx + earliest.match[0].length);
   }
   return nodes;

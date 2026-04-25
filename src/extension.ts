@@ -27,12 +27,13 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("iridescent.setApiKey", () => setApiKey(ctx)),
     vscode.commands.registerCommand("iridescent.cycleMode", async () => {
       const cfg = vscode.workspace.getConfiguration("iridescent");
-      const order: PermissionMode[] = ["default", "plan", "auto", "bypass"];
+      const order: PermissionMode[] = ["default", "plan", "auto"];
       const cur = cfg.get<PermissionMode>("permissionMode", "default");
       const next = order[(order.indexOf(cur) + 1) % order.length];
       await cfg.update("permissionMode", next, vscode.ConfigurationTarget.Global);
       vscode.window.setStatusBarMessage(`Iridescent mode: ${next}`, 2000);
-    })
+    }),
+    vscode.commands.registerCommand("iridescent.sendSelection", () => panel.sendSelectionToChat())
   );
 }
 
