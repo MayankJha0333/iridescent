@@ -921,6 +921,55 @@ html, body, #root {
   max-width: 240px;
 }
 
+/* ─── Same badge inside the user message bubble ─── */
+.msg-badge-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  vertical-align: baseline;
+  margin: 0 1px;
+  max-width: 100%;
+}
+.msg-badge-wrap.open { display: flex; width: 100%; }
+.msg-badge {
+  cursor: pointer;
+  background: var(--accent-soft);
+  /* Reset button defaults so the chip reads as inline text. */
+  appearance: none;
+  -webkit-appearance: none;
+}
+.msg-badge.open {
+  background: var(--accent-mid);
+  border-color: var(--accent);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  color: var(--t1);
+}
+.msg-badge-code {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--accent-mid);
+  border-top: none;
+  border-radius: 0 5px 5px 5px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--t1);
+  max-height: 280px;
+  overflow: auto;
+  width: 100%;
+  white-space: pre;
+  animation: fadein 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.msg-badge-code code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+}
+
 .cmp-toolbar {
   display: flex;
   align-items: center;
