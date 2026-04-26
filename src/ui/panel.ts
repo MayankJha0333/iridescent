@@ -338,20 +338,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.orchestrator?.cancel();
-    const { restored, deleted } = await this.checkpoints.restore(turnId);
+    await this.checkpoints.restore(turnId);
     const surviving = this.session.truncateAt(turnId);
     this.resumeId = undefined;
-    this.post({
-      type: "rewind",
-      turnId,
-      restored,
-      deleted,
-      events: surviving
-    });
-    vscode.window.setStatusBarMessage(
-      `Iridescent: rewound ${restored} files restored, ${deleted} deleted`,
-      3000
-    );
+    this.post({ type: "rewind", events: surviving });
   }
 
   private async onAuthSubscription() {

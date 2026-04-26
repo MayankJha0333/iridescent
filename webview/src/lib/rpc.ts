@@ -104,7 +104,7 @@ export type Inbound =
   | { type: "turnEnd" }
   | { type: "error"; message: string }
   | { type: "editorContext"; context: EditorContext | null }
-  | { type: "rewind"; events: TimelineEvent[]; restored: number; deleted: number }
+  | { type: "rewind"; events: TimelineEvent[] }
   | { type: "models"; models: ModelInfo[]; authMode: AuthMode | null }
   | { type: "skills"; skills: SkillInfo[] }
   | { type: "fileSearchResults"; id: string; results: FileSearchResult[] }

@@ -65,7 +65,6 @@ export function App() {
   const [input, setInput] = useState(initial.input ?? "");
   const [error, setError] = useState<string | null>(null);
   const [editorContext, setEditorContext] = useState<EditorContext | null>(null);
-  const [rewind, setRewind] = useState<{ restored: number; deleted: number } | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([...FALLBACK_MODELS]);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [composerFocusKey, setComposerFocusKey] = useState(0);
@@ -158,7 +157,6 @@ export function App() {
           dispatchTimeline({ type: "replace", events: m.events });
           setStreaming("");
           setError(null);
-          setRewind({ restored: m.restored, deleted: m.deleted });
           break;
         case "models":
           if (m.models.length) setModels(m.models);
@@ -218,7 +216,6 @@ export function App() {
         input={input}
         error={error}
         editorContext={editorContext}
-        rewind={rewind}
         models={models}
         skills={skills}
         composerFocusKey={composerFocusKey}
@@ -231,7 +228,6 @@ export function App() {
         }}
         onCancel={() => send({ type: "cancel" })}
         onDismissError={() => setError(null)}
-        onDismissRewind={() => setRewind(null)}
       />
     </div>
   );

@@ -18,7 +18,7 @@ import { Composer } from "./Composer";
 import { ContextStrip } from "./ContextStrip";
 import { EmptyState } from "./EmptyState";
 import { ErrorBanner } from "./ErrorBanner";
-import { RewindMarker } from "./RewindMarker";
+import { RewindModal } from "./RewindModal";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
@@ -33,7 +33,6 @@ export interface ChatScreenProps {
   input: string;
   error: string | null;
   editorContext: EditorContext | null;
-  rewind: { restored: number; deleted: number } | null;
   models: ReadonlyArray<ModelInfo>;
   skills: ReadonlyArray<SkillInfo>;
   composerFocusKey: number;
@@ -43,7 +42,6 @@ export interface ChatScreenProps {
   onSubmit: (text: string) => void;
   onCancel: () => void;
   onDismissError: () => void;
-  onDismissRewind: () => void;
 }
 
 export function ChatScreen({
@@ -56,7 +54,6 @@ export function ChatScreen({
   input,
   error,
   editorContext,
-  rewind,
   models,
   skills,
   composerFocusKey,
@@ -65,12 +62,15 @@ export function ChatScreen({
   onInput,
   onSubmit,
   onCancel,
-  onDismissError,
-  onDismissRewind
+  onDismissError
 }: ChatScreenProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const userScrolled = useRef(false);
   const [, force] = useState(0);
+  const [pendingRewind, setPendingRewind] = useState<{
+    turnId: string;
+    messagesAfter: number;
+  } | null>(null);
 
   const grouped = useMemo(() => groupEvents(events), [events]);
 
@@ -94,17 +94,25 @@ export function ChatScreen({
 
       <div className="log" ref={logRef} onScroll={onScroll}>
         {grouped.length === 0 && !streaming && <EmptyState />}
-        {grouped.map((g, i) => renderGroup(g, i, grouped))}
-        {rewind && (
-          <RewindMarker
-            restored={rewind.restored}
-            deleted={rewind.deleted}
-            onDismiss={onDismissRewind}
-          />
+        {grouped.map((g, i) =>
+          renderGroup(g, i, grouped, (turnId, messagesAfter) =>
+            setPendingRewind({ turnId, messagesAfter })
+          )
         )}
         {streaming && <AssistantMessage text={streaming} streaming />}
         {error && <ErrorBanner text={error} onDismiss={onDismissError} />}
       </div>
+
+      {pendingRewind && (
+        <RewindModal
+          messagesAfter={pendingRewind.messagesAfter}
+          onCancel={() => setPendingRewind(null)}
+          onConfirm={() => {
+            send({ type: "rewindTo", turnId: pendingRewind.turnId });
+            setPendingRewind(null);
+          }}
+        />
+      )}
 
       {userScrolled.current && (
         <button
@@ -200,7 +208,12 @@ function groupEvents(events: TimelineEvent[]): Group[] {
   return groups;
 }
 
-function renderGroup(g: Group, idx: number, all: Group[]) {
+function renderGroup(
+  g: Group,
+  idx: number,
+  all: Group[],
+  onRewindRequest: (turnId: string, messagesAfter: number) => void
+) {
   if (g.kind === "user") {
     const messagesAfter = all.length - idx - 1;
     return (
@@ -210,6 +223,7 @@ function renderGroup(g: Group, idx: number, all: Group[]) {
         text={g.text}
         canRewind
         messagesAfter={messagesAfter}
+        onRewindRequest={onRewindRequest}
       />
     );
   }
