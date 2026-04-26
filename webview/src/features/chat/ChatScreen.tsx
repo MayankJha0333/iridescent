@@ -213,7 +213,20 @@ function renderGroup(g: Group, idx: number, all: Group[]) {
       />
     );
   }
-  if (g.kind === "assistant") return <AssistantMessage key={g.id} text={g.text} />;
+  if (g.kind === "assistant") {
+    // Only the first assistant block in a turn (i.e. since the most recent
+    // user message) shows the avatar — follow-up text after tool calls in
+    // the same turn is rendered as a plain continuation.
+    let showAvatar = true;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (all[i].kind === "user") break;
+      if (all[i].kind === "assistant") {
+        showAvatar = false;
+        break;
+      }
+    }
+    return <AssistantMessage key={g.id} text={g.text} showAvatar={showAvatar} />;
+  }
   return (
     <ToolCard
       key={g.id}

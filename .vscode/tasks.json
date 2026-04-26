@@ -2,18 +2,30 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "build",
-      "problemMatcher": [],
+      "type": "shell",
       "label": "npm: build",
+      "command": "npm run build",
+      "options": {
+        "shell": {
+          "executable": "/bin/zsh",
+          "args": ["-l", "-i", "-c"]
+        }
+      },
+      "problemMatcher": [],
       "detail": "Build extension + webview"
     },
     {
-      "type": "npm",
-      "script": "watch",
+      "type": "shell",
+      "label": "npm: watch",
+      "command": "npm run watch",
+      "options": {
+        "shell": {
+          "executable": "/bin/zsh",
+          "args": ["-l", "-i", "-c"]
+        }
+      },
       "isBackground": true,
-      "problemMatcher": [],
-      "label": "npm: watch"
+      "problemMatcher": []
     }
   ]
 }

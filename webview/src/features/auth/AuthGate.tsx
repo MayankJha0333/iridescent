@@ -1,13 +1,13 @@
 // ─────────────────────────────────────────────────────────────
-// Sign-in screen. Three tabs: subscription (Claude CLI),
-// api key (Anthropic Console), and cloud (placeholder).
+// Sign-in screen. Two tabs: subscription (Claude CLI, default)
+// and api key (Anthropic Console, advanced).
 // ─────────────────────────────────────────────────────────────
 
-import { KeyboardEvent, useEffect, useState } from "react";
+import { KeyboardEvent, useState } from "react";
 import { Orb } from "../../design/primitives";
-import { send, onMessage, CliStatus } from "../../lib/rpc";
+import { send } from "../../lib/rpc";
 
-type Tab = "subscription" | "apikey" | "cloud";
+type Tab = "subscription" | "apikey";
 type TokenKind = "oauth" | "api" | "unknown" | "empty";
 
 export interface AuthGateProps {
@@ -17,25 +17,7 @@ export interface AuthGateProps {
 
 export function AuthGate({ validating, error }: AuthGateProps) {
   const [tab, setTab] = useState<Tab>("subscription");
-  const [cli, setCli] = useState<CliStatus | null>(null);
-  const [cliChecking, setCliChecking] = useState(false);
   const [key, setKey] = useState("");
-
-  useEffect(() => {
-    setCliChecking(true);
-    send({ type: "checkClaudeCli" });
-    return onMessage((m) => {
-      if (m.type === "cliStatus") {
-        setCli(m.cli);
-        setCliChecking(false);
-      }
-    });
-  }, []);
-
-  const recheck = () => {
-    setCliChecking(true);
-    send({ type: "checkClaudeCli" });
-  };
 
   const submitKey = () => {
     const trimmed = key.trim();
@@ -63,18 +45,10 @@ export function AuthGate({ validating, error }: AuthGateProps) {
       <div className="auth-tabs" role="tablist">
         <TabButton id="subscription" active={tab} onClick={setTab}>Subscription</TabButton>
         <TabButton id="apikey"        active={tab} onClick={setTab}>API key</TabButton>
-        <TabButton id="cloud"         active={tab} onClick={setTab}>Cloud</TabButton>
       </div>
 
       <div className="auth-panel">
-        {tab === "subscription" && (
-          <SubscriptionPanel
-            cli={cli}
-            checking={cliChecking}
-            validating={validating}
-            onRecheck={recheck}
-          />
-        )}
+        {tab === "subscription" && <SubscriptionPanel validating={validating} />}
         {tab === "apikey" && (
           <ApiKeyPanel
             keyVal={key}
@@ -86,7 +60,6 @@ export function AuthGate({ validating, error }: AuthGateProps) {
             detected={detected}
           />
         )}
-        {tab === "cloud" && <CloudPanel />}
       </div>
 
       <div className="auth-foot">
@@ -123,114 +96,42 @@ function TabButton({
 // ── Subscription panel ───────────────────────────────────────
 
 interface SubscriptionPanelProps {
-  cli: CliStatus | null;
-  checking: boolean;
   validating: boolean;
-  onRecheck: () => void;
 }
 
-function SubscriptionPanel({ cli, checking, validating, onRecheck }: SubscriptionPanelProps) {
-  const openExternal = (url: string) => send({ type: "openExternal", url });
+function SubscriptionPanel({ validating }: SubscriptionPanelProps) {
   const runCmd = (command: string) => send({ type: "runTerminalCommand", command });
-  const connect = () => send({ type: "authSubscription" });
+  const [signedIn, setSignedIn] = useState(false);
 
-  if (checking || !cli) {
-    return <p className="auth-desc">Checking for Claude CLI…</p>;
-  }
-
-  if (!cli.installed) {
-    return (
-      <>
-        <p className="auth-desc">
-          Iridescent uses your <strong>Claude Pro / Max / Team / Enterprise</strong> subscription
-          via the official Claude CLI. This avoids API-key billing and bypasses 429s on the
-          Messages API.
-        </p>
-        <div className="auth-status bad">
-          <span className="status-dot" /> Claude CLI: not installed
-        </div>
-        <p className="auth-desc muted">Install it (macOS/Linux):</p>
-        <button
-          type="button"
-          className="inline-btn wide"
-          onClick={() => runCmd("curl -fsSL https://claude.ai/install.sh | bash")}
-        >
-          Run <code>curl -fsSL https://claude.ai/install.sh | bash</code>
-        </button>
-        <p className="auth-desc muted" style={{ marginTop: 10 }}>
-          Or with Homebrew:
-        </p>
-        <button
-          type="button"
-          className="inline-btn wide"
-          onClick={() => runCmd("brew install --cask claude-code")}
-        >
-          Run <code>brew install --cask claude-code</code>
-        </button>
-        <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
-          <button type="button" className="inline-btn" onClick={onRecheck}>
-            Re-check
-          </button>
-          <button
-            type="button"
-            className="inline-btn"
-            onClick={() => openExternal("https://code.claude.com/docs/en/quickstart")}
-          >
-            Install docs ↗
-          </button>
-        </div>
-      </>
-    );
-  }
-
-  if (!cli.loggedIn) {
-    return (
-      <>
-        <p className="auth-desc">
-          Claude CLI found. You need to log in with your Anthropic account.
-        </p>
-        <div className="auth-status neutral">
-          <span className="status-dot" /> Claude CLI v{cli.version} · not logged in
-        </div>
-        <button
-          type="button"
-          className="inline-btn wide"
-          onClick={() => runCmd("claude login")}
-        >
-          Run <code>claude login</code>
-        </button>
-        {cli.error && <div className="auth-error">{cli.error}</div>}
-        <div style={{ marginTop: 12 }}>
-          <button type="button" className="inline-btn" onClick={onRecheck}>
-            Re-check after login
-          </button>
-        </div>
-      </>
-    );
-  }
+  // Click flow: open `claude login` in a terminal so the user can authorize
+  // in their browser, and immediately mark subscription mode active. If the
+  // user doesn't actually finish login, the first chat message will surface
+  // the auth error — at which point they can rerun login from the terminal.
+  const onClick = () => {
+    runCmd("claude login");
+    setSignedIn(true);
+    send({ type: "authSubscription" });
+  };
 
   return (
     <>
       <p className="auth-desc">
-        Ready to use your <strong>Claude subscription</strong>. Iridescent runs the Claude CLI
-        locally — no token needed.
+        Sign in once with your <strong>Claude</strong> account. Works with Pro, Max, Team, or
+        Enterprise — no API key needed.
       </p>
-      <div className="auth-status good">
-        <span className="status-dot" /> Claude CLI v{cli.version} · logged in
-      </div>
       <button
         type="button"
         className="auth-primary"
-        onClick={connect}
-        disabled={validating}
+        onClick={onClick}
+        disabled={validating || signedIn}
       >
-        {validating ? "Connecting…" : "Use my subscription"}
+        {signedIn ? "Connecting…" : "Sign in with Claude"}
       </button>
-      <div style={{ marginTop: 10 }}>
-        <button type="button" className="inline-btn" onClick={onRecheck}>
-          Re-check CLI
-        </button>
-      </div>
+      {signedIn && (
+        <p className="auth-desc muted" style={{ marginTop: 10 }}>
+          Complete the sign-in in the terminal/browser. You can start chatting as soon as it's done.
+        </p>
+      )}
     </>
   );
 }
@@ -309,21 +210,6 @@ function ApiKeyPanel({
         {validating ? "Validating…" : "Connect"}
       </button>
     </>
-  );
-}
-
-// ── Cloud panel ──────────────────────────────────────────────
-
-function CloudPanel() {
-  return (
-    <div className="auth-cloud">
-      <div className="auth-cloud-badge">Coming soon</div>
-      <p className="auth-desc">
-        Run Iridescent on <strong>Amazon Bedrock</strong>, <strong>Google Vertex AI</strong>, or{" "}
-        <strong>Microsoft Foundry</strong> with your enterprise credentials.
-      </p>
-      <p className="auth-desc muted">For now, use subscription or API key.</p>
-    </div>
   );
 }
 

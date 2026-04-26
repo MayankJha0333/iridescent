@@ -40,14 +40,6 @@ export interface EditorContext {
   selection: { startLine: number; endLine: number } | null;
 }
 
-export interface CliStatus {
-  installed: boolean;
-  loggedIn: boolean;
-  version?: string;
-  path?: string;
-  error?: string;
-}
-
 export type ModelGroup = "alias" | "version";
 
 export interface ModelInfo {
@@ -91,7 +83,6 @@ export type Outbound =
   | { type: "rewindTo"; turnId: string }
   | { type: "authSubmitKey"; key: string }
   | { type: "authSubscription" }
-  | { type: "checkClaudeCli" }
   | { type: "openExternal"; url: string }
   | { type: "runTerminalCommand"; command: string }
   | { type: "requestModels" }
@@ -114,7 +105,6 @@ export type Inbound =
   | { type: "error"; message: string }
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "rewind"; events: TimelineEvent[]; restored: number; deleted: number }
-  | { type: "cliStatus"; cli: CliStatus }
   | { type: "models"; models: ModelInfo[]; authMode: AuthMode | null }
   | { type: "skills"; skills: SkillInfo[] }
   | { type: "fileSearchResults"; id: string; results: FileSearchResult[] }

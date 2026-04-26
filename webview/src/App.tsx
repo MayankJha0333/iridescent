@@ -178,9 +178,8 @@ export function App() {
           });
           setComposerFocusKey((k) => k + 1);
           break;
-        case "cliStatus":
         case "fileSearchResults":
-          // Consumed by AuthGate / MentionPopover via their own subscriptions.
+          // Consumed by MentionPopover via its own subscription.
           break;
       }
     });

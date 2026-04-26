@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────
-// Tool call card. Collapsed by default — header shows name + a
-// short summary derived from the JSON input. Expanded view shows
-// raw input and (split) bash stdout / stderr.
+// Tool call row. Collapsed by default — Antigravity-style:
+// "<verb> <ext-badge> <path-or-target> <meta> <count?>".
+// Expanded view shows raw input and (split) bash stdout / stderr.
 // ─────────────────────────────────────────────────────────────
 
 import { ReactNode, MouseEvent, useEffect, useState } from "react";
@@ -21,7 +21,6 @@ export function ToolCard({ name, input, result, isError, pending }: ToolCardProp
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const status: Status = pending ? "pending" : isError ? "error" : result !== undefined ? "ok" : "pending";
-  const summary = summarize(name, input);
   const exitCode = extractExitCode(result);
   const isBash = /bash|run|shell|exec/i.test(name);
 
@@ -50,14 +49,33 @@ export function ToolCard({ name, input, result, isError, pending }: ToolCardProp
     setTimeout(() => setCopied(false), 1400);
   };
 
+  const head = describe(name, input, result);
+
   return (
     <div className={`tool tool-${status}`}>
       <button type="button" className="tool-head" onClick={() => setOpen((o) => !o)}>
-        <span className="tool-icon" aria-hidden>
-          <Icon name={iconFor(name)} size={12} />
-        </span>
-        <span className="tool-name">{name}</span>
-        <span className="tool-summary">{summary}</span>
+        <span className="tool-verb">{head.verb}</span>
+        {head.badge ? (
+          <span
+            className={`file-badge file-badge-${head.badge.kind}`}
+            style={head.badge.color ? { color: head.badge.color } : undefined}
+          >
+            {head.badge.kind === "folder" ? (
+              <Icon name="folder" size={11} />
+            ) : (
+              head.badge.label
+            )}
+          </span>
+        ) : (
+          <span className="tool-icon" aria-hidden>
+            <Icon name={iconFor(name)} size={11} />
+          </span>
+        )}
+        <span className="tool-target">{head.target}</span>
+        {head.meta && <span className="tool-meta">{head.meta}</span>}
+        {head.count !== undefined && (
+          <span className="tool-pill">{head.count} results</span>
+        )}
         {exitCode !== null && (
           <span className={`tool-exit ${exitCode === 0 ? "exit-ok" : "exit-bad"}`}>
             exit {exitCode}
@@ -228,28 +246,158 @@ function iconFor(name: string): IconName {
   return "code";
 }
 
-function summarize(name: string, rawInput: string): string {
-  try {
-    const obj = JSON.parse(rawInput) as Record<string, unknown>;
-    if (/read|write|edit|view/i.test(name)) {
-      return String(obj.path ?? obj.file_path ?? obj.filePath ?? "");
-    }
-    if (/bash|run/i.test(name)) {
-      const cmd = String(obj.command ?? "");
-      return cmd.length > 100 ? cmd.slice(0, 100) + "…" : cmd;
-    }
-    if (/grep|search|glob/i.test(name)) {
-      return String(obj.pattern ?? obj.query ?? obj.glob ?? "");
-    }
-    const first = Object.values(obj)[0];
-    return typeof first === "string"
-      ? first.length > 100
-        ? first.slice(0, 100) + "…"
-        : first
-      : "";
-  } catch {
-    return rawInput.length > 100 ? rawInput.slice(0, 100) + "…" : rawInput;
+// Antigravity-style row metadata: a leading verb, a file/extension badge,
+// and a target string (path, command, or pattern), with optional meta
+// (e.g. "#L1-77") and a result count pill.
+interface RowDescription {
+  verb: string;
+  badge: FileBadge | null;
+  target: string;
+  meta?: string;
+  count?: number;
+}
+
+interface FileBadge {
+  kind: "ext" | "folder";
+  label: string;
+  color?: string;
+}
+
+function describe(name: string, rawInput: string, result?: string): RowDescription {
+  const n = name.toLowerCase();
+  const obj = safeParse(rawInput);
+
+  if (/bash|run|shell|exec/.test(n)) {
+    const cmd = String(obj?.command ?? "").trim();
+    return { verb: "Ran", badge: null, target: cmd || "(no command)" };
   }
+
+  if (/grep|search|find/.test(n)) {
+    const pattern = String(obj?.pattern ?? obj?.query ?? "");
+    const path = obj?.path ? String(obj.path) : "";
+    const count = parseSearchCount(result);
+    return {
+      verb: "Searched",
+      badge: null,
+      target: pattern || path || "(no pattern)",
+      meta: path && pattern ? homeShort(path) : undefined,
+      count
+    };
+  }
+
+  if (/glob/.test(n)) {
+    const pattern = String(obj?.pattern ?? obj?.glob ?? "");
+    return {
+      verb: "Globbed",
+      badge: null,
+      target: pattern || "(no pattern)",
+      count: parseSearchCount(result)
+    };
+  }
+
+  if (/^todowrite$|todo/i.test(name)) {
+    const todos = Array.isArray(obj?.todos) ? obj.todos : [];
+    return {
+      verb: "Updated",
+      badge: null,
+      target: "todos",
+      meta: todos.length ? `${todos.length} item${todos.length === 1 ? "" : "s"}` : undefined
+    };
+  }
+
+  if (/^ls$|listdir|list_dir/.test(n)) {
+    const path = String(obj?.path ?? "");
+    return {
+      verb: "Analyzed",
+      badge: { kind: "folder", label: "" },
+      target: homeShort(path) || "(folder)"
+    };
+  }
+
+  if (/read|view|open|cat/.test(n)) {
+    const path = String(obj?.path ?? obj?.file_path ?? obj?.filePath ?? "");
+    const start = Number(obj?.offset ?? obj?.start_line ?? obj?.startLine);
+    const limit = Number(obj?.limit ?? obj?.lines);
+    const meta = lineRange(start, limit);
+    return { verb: "Analyzed", badge: badgeForPath(path), target: homeShort(path), meta };
+  }
+
+  if (/write|create/.test(n)) {
+    const path = String(obj?.path ?? obj?.file_path ?? obj?.filePath ?? "");
+    return { verb: "Wrote", badge: badgeForPath(path), target: homeShort(path) };
+  }
+
+  if (/edit|replace|patch/.test(n)) {
+    const path = String(obj?.path ?? obj?.file_path ?? obj?.filePath ?? "");
+    return { verb: "Edited", badge: badgeForPath(path), target: homeShort(path) };
+  }
+
+  // Generic fallback: just show the tool name + first input value.
+  const firstStr =
+    obj && typeof obj === "object"
+      ? String(Object.values(obj).find((v) => typeof v === "string") ?? "")
+      : "";
+  return { verb: name, badge: null, target: firstStr };
+}
+
+function safeParse(raw: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+// `/Users/apple/OpenSource/foo` → `~/OpenSource/foo`. Macs and Linux only;
+// Windows paths are left alone.
+function homeShort(p: string): string {
+  return p.replace(/^\/(Users|home)\/[^/]+/, "~");
+}
+
+function lineRange(start: number, limit: number): string | undefined {
+  if (!Number.isFinite(start) && !Number.isFinite(limit)) return undefined;
+  const a = Number.isFinite(start) ? start : 1;
+  const b = Number.isFinite(limit) ? a + limit - 1 : undefined;
+  return b ? `#L${a}-${b}` : `#L${a}`;
+}
+
+function parseSearchCount(result?: string): number | undefined {
+  if (!result) return undefined;
+  const lines = result.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0 || lines.length > 5000) return undefined;
+  return lines.length;
+}
+
+const EXT_COLORS: Record<string, string> = {
+  ts: "#3b82f6", tsx: "#3b82f6",
+  js: "#eab308", jsx: "#eab308",
+  py: "#22c55e",
+  rs: "#f97316",
+  go: "#06b6d4",
+  json: "#eab308",
+  md: "#60a5fa",
+  css: "#ec4899",
+  html: "#ef4444",
+  c: "#60a5fa", h: "#60a5fa", cpp: "#60a5fa", hpp: "#60a5fa",
+  java: "#f97316",
+  rb: "#ef4444",
+  sh: "#a3a3a3",
+  yml: "#a3a3a3", yaml: "#a3a3a3",
+  toml: "#a3a3a3",
+  sql: "#06b6d4"
+};
+
+function badgeForPath(path: string): FileBadge | null {
+  if (!path) return null;
+  const m = path.match(/\.([a-zA-Z0-9]+)$/);
+  if (!m) return { kind: "ext", label: "···" };
+  const ext = m[1].toLowerCase();
+  return {
+    kind: "ext",
+    label: ext.length > 4 ? ext.slice(0, 4).toUpperCase() : ext.toUpperCase(),
+    color: EXT_COLORS[ext]
+  };
 }
 
 function extractExitCode(result?: string): number | null {

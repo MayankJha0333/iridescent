@@ -15,7 +15,6 @@ import {
   clearAuthMode
 } from "../secrets.js";
 import { AuthMode, createProvider } from "../providers/factory.js";
-import { detectClaudeCli, quickCheckCliBinary } from "../services/claude-cli-detect.js";
 import { CheckpointService } from "../services/checkpoint.js";
 
 export class ChatPanelProvider implements vscode.WebviewViewProvider {
@@ -131,8 +130,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     if (mode === "apikey") {
       authed = !!(await getApiKey(this.ctx, "anthropic"));
     } else if (mode === "subscription") {
-      const bin = await quickCheckCliBinary();
-      authed = !!bin.path;
+      // CLI is bundled — once the user has signed in (i.e. picked subscription
+      // mode), trust it. Real-world auth errors surface in the chat stream.
+      authed = true;
     }
 
     this.post({
@@ -217,9 +217,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "authSubscription":
         await this.onAuthSubscription();
-        break;
-      case "checkClaudeCli":
-        await this.sendCliStatus();
         break;
       case "authReset":
         await deleteApiKey(this.ctx, "anthropic");
@@ -357,32 +354,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     );
   }
 
-  private async sendCliStatus() {
-    const cli = await detectClaudeCli();
-    this.post({ type: "cliStatus", cli });
-  }
-
   private async onAuthSubscription() {
-    this.post({ type: "authValidating" });
-    const cli = await detectClaudeCli();
-    if (!cli.installed) {
-      this.post({
-        type: "authResult",
-        ok: false,
-        error: "Claude CLI not found. Install it first (see Subscription tab)."
-      });
-      this.post({ type: "cliStatus", cli });
-      return;
-    }
-    if (!cli.loggedIn) {
-      this.post({
-        type: "authResult",
-        ok: false,
-        error: "Claude CLI found but not logged in. Run `claude login` in the terminal."
-      });
-      this.post({ type: "cliStatus", cli });
-      return;
-    }
     await setAuthMode(this.ctx, "subscription");
     this.post({ type: "authResult", ok: true });
     await this.broadcastAuthState();
@@ -432,17 +404,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     let externalToolExecution = false;
     try {
       if (mode === "subscription") {
-        const bin = await quickCheckCliBinary();
-        if (!bin.path) {
-          this.post({
-            type: "error",
-            message: "Claude CLI not found on PATH. Logout and reconnect."
-          });
-          return;
-        }
         providerInstance = createProvider({
           authMode: "subscription",
-          claudeBinary: bin.path,
           cwd: workspaceRoot,
           permissionMode: permMode,
           allowedBashPatterns: bashAllowlist,
