@@ -18,6 +18,13 @@ import { AuthMode, createProvider } from "../providers/factory.js";
 import { CheckpointService } from "../services/checkpoint.js";
 import { HistoryService, deriveTitle } from "../services/history.js";
 import { discoverClaudeSkills } from "../services/claude-skills.js";
+import {
+  fetchMarketplace,
+  installSkill as installMarketplaceSkill,
+  uninstallSkill as uninstallMarketplaceSkill,
+  InstallScope,
+  InstallTarget
+} from "../services/marketplace.js";
 
 export class ChatPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = "iridescent.chat";
@@ -347,6 +354,33 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           await this.setSkillEnabled(msg.id, msg.enabled);
         }
         break;
+      case "requestMarketplace":
+        await this.handleRequestMarketplace(
+          typeof msg.offset === "number" ? msg.offset : 0,
+          typeof msg.limit === "number" ? msg.limit : 24,
+          typeof msg.query === "string" ? msg.query : undefined
+        );
+        break;
+      case "installMarketplaceSkill":
+        if (
+          msg.target &&
+          typeof msg.target === "object" &&
+          (msg.scope === "user" || msg.scope === "project")
+        ) {
+          await this.handleInstallMarketplaceSkill(
+            msg.target as InstallTarget,
+            msg.scope
+          );
+        }
+        break;
+      case "uninstallMarketplaceSkill":
+        if (
+          typeof msg.name === "string" &&
+          (msg.scope === "user" || msg.scope === "project")
+        ) {
+          await this.handleUninstallMarketplaceSkill(msg.name, msg.scope);
+        }
+        break;
       case "requestFileSearch":
         await this.handleFileSearch(
           String(msg.query ?? ""),
@@ -451,6 +485,83 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       Array.from(set)
     );
     await this.broadcastSkills();
+  }
+
+  // ── Marketplace handlers ────────────────────────────────────
+
+  private async handleRequestMarketplace(
+    offset: number,
+    limit: number,
+    query: string | undefined
+  ): Promise<void> {
+    try {
+      const result = await fetchMarketplace({ offset, limit, query });
+      this.post({
+        type: "marketplaceList",
+        skills: result.skills.map((s) => ({
+          id: s.id,
+          name: s.name,
+          namespace: s.namespace,
+          description: s.description,
+          author: s.author,
+          stars: s.stars,
+          installs: s.installs,
+          sourceUrl: s.sourceUrl,
+          repoOwner: s.repoOwner,
+          repoName: s.repoName,
+          directoryPath: s.directoryPath
+        })),
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit
+      });
+    } catch (err) {
+      this.post({
+        type: "marketplaceError",
+        message: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  private async handleInstallMarketplaceSkill(
+    target: InstallTarget,
+    scope: InstallScope
+  ): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const result = await installMarketplaceSkill(target, scope, cwd);
+    this.post({
+      type: "marketplaceInstallResult",
+      action: "install",
+      name: target.name,
+      ok: result.ok,
+      scope: result.scope,
+      installPath: result.installPath,
+      filesWritten: result.filesWritten,
+      error: result.error
+    });
+    // Re-broadcast so the picker picks up the new skill in its on-disk source.
+    if (result.ok) {
+      await this.broadcastSkills();
+    }
+  }
+
+  private async handleUninstallMarketplaceSkill(
+    name: string,
+    scope: InstallScope
+  ): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const result = await uninstallMarketplaceSkill(name, scope, cwd);
+    this.post({
+      type: "marketplaceInstallResult",
+      action: "uninstall",
+      name,
+      ok: result.ok,
+      scope: result.scope,
+      error: result.error
+    });
+    if (result.ok) {
+      await this.broadcastSkills();
+    }
   }
 
   private async handleFileSearch(query: string, id: string) {

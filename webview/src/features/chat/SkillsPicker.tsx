@@ -1,43 +1,18 @@
 // ─────────────────────────────────────────────────────────────
-// Skills picker. Surfaces the connected provider's tools/skills
-// (Read/Write/Bash/Glob/Grep/WebFetch/Task/MCP/…) and shows their
-// enabled state. Toggleable skills (added from the marketplace)
-// can be flipped on/off; built-in tools are read-only.
+// Skills picker. Surfaces every skill the agent has access to:
+//   - Built-in tools (Read/Write/Bash) — always on
+//   - Claude Code agent (Glob/Grep/Edit/WebFetch/Task) — CLI-native
+//   - Project skills (<workspace>/.claude/skills/) — toggleable
+//   - User skills (~/.claude/skills/) — toggleable
+//   - Integrations (placeholder)
+// "Add skills" opens the live Marketplace (claude-plugins.dev),
+// which handles real install/uninstall via the extension host.
 // ─────────────────────────────────────────────────────────────
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, IconName } from "../../design/icons";
 import { send, SkillInfo } from "../../lib/rpc";
-import { SkillsMarketplace, MarketplaceSkill } from "./SkillsMarketplace";
-
-const ADDED_KEY = "iridescent.addedSkills.v1";
-
-interface AddedSkill {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  publisher: string;
-}
-
-function loadAdded(): AddedSkill[] {
-  try {
-    const raw = localStorage.getItem(ADDED_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as AddedSkill[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveAdded(skills: AddedSkill[]) {
-  try {
-    localStorage.setItem(ADDED_KEY, JSON.stringify(skills));
-  } catch {
-    /* webview storage might be sandboxed — ignore */
-  }
-}
+import { SkillsMarketplace } from "./SkillsMarketplace";
 
 export interface SkillsPickerProps {
   skills: ReadonlyArray<SkillInfo>;
@@ -46,7 +21,6 @@ export interface SkillsPickerProps {
 export function SkillsPicker({ skills }: SkillsPickerProps) {
   const [open, setOpen] = useState(false);
   const [marketOpen, setMarketOpen] = useState(false);
-  const [added, setAdded] = useState<AddedSkill[]>(() => loadAdded());
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,42 +39,11 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
     };
   }, [open, marketOpen]);
 
-  useEffect(() => {
-    saveAdded(added);
-  }, [added]);
-
-  const installSkill = (skill: MarketplaceSkill) => {
-    setAdded((prev) =>
-      prev.some((s) => s.id === skill.id)
-        ? prev
-        : [
-            ...prev,
-            {
-              id: skill.id,
-              name: skill.name,
-              description: skill.description,
-              publisher: skill.publisher,
-              enabled: true
-            }
-          ]
-    );
-  };
-
-  const removeSkill = (id: string) => {
-    setAdded((prev) => prev.filter((s) => s.id !== id));
-  };
-
-  const toggleSkill = (id: string) => {
-    setAdded((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)));
-  };
-
-  // Count enabled across every category we surface — extension-provided
-  // (built-ins, CLI, discovered, integrations) honor their own `enabled`
-  // flag, marketplace adds carry their own boolean.
-  const enabledExtras = added.filter((s) => s.enabled).length;
-  const enabledExtension = skills.filter((s) => s.enabled).length;
-  const totalEnabled = enabledExtras + enabledExtension;
-  const totalCount = skills.length + added.length;
+  // The on-disk skill list is the only source of truth now — every entry
+  // honors its own `enabled` flag (driven by the disabled-skills set in
+  // globalState).
+  const totalEnabled = skills.filter((s) => s.enabled).length;
+  const totalCount = skills.length;
 
   const grouped = useMemo(
     () => ({
@@ -116,7 +59,27 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
     [skills]
   );
 
-  const installedIds = useMemo(() => new Set(added.map((s) => s.id)), [added]);
+  // For the marketplace modal: a name → installed-source map built from the
+  // skills the extension just discovered on disk. This is the source of
+  // truth for scope badges (User vs Project) — the old localStorage `added`
+  // list is purely a cosmetic carry-over for marketplace items the user
+  // toggled on/off without a real install.
+  const installedMap = useMemo(() => {
+    const m = new Map<
+      string,
+      { source: "user" | "project"; displayName: string; description: string }
+    >();
+    for (const s of skills) {
+      if (s.source === "user" || s.source === "project") {
+        m.set(s.id, {
+          source: s.source,
+          displayName: s.name,
+          description: s.description
+        });
+      }
+    }
+    return m;
+  }, [skills]);
 
   return (
     <>
@@ -175,19 +138,7 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
                   ))}
                 </SkillSection>
               )}
-              {added.length > 0 && (
-                <SkillSection title="Added from marketplace">
-                  {added.map((s) => (
-                    <ToggleableRow
-                      key={s.id}
-                      skill={s}
-                      onToggle={() => toggleSkill(s.id)}
-                      onRemove={() => removeSkill(s.id)}
-                    />
-                  ))}
-                </SkillSection>
-              )}
-              {grouped.integration.length > 0 && added.length === 0 && (
+              {grouped.integration.length > 0 && (
                 <SkillSection title="Integrations">
                   {grouped.integration.map((s) => (
                     <SkillRow key={s.id} skill={s} />
@@ -213,9 +164,8 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
 
       <SkillsMarketplace
         open={marketOpen}
-        installed={installedIds}
+        installed={installedMap}
         onClose={() => setMarketOpen(false)}
-        onInstall={installSkill}
       />
     </>
   );
@@ -289,44 +239,6 @@ function DiscoveredRow({ skill }: { skill: SkillInfo }) {
           }
           label={skill.name}
         />
-      </div>
-    </div>
-  );
-}
-
-function ToggleableRow({
-  skill,
-  onToggle,
-  onRemove
-}: {
-  skill: AddedSkill;
-  onToggle: () => void;
-  onRemove: () => void;
-}) {
-  const icon = iconFor(skill.id);
-  return (
-    <div className={`skill-row toggleable${skill.enabled ? " enabled" : ""}`}>
-      <span className="skill-row-icon">
-        <Icon name={icon} size={12} />
-      </span>
-      <div className="skill-row-body">
-        <div className="skill-row-name">
-          {skill.name}
-          <span className="skill-row-tag market">{skill.publisher}</span>
-        </div>
-        <div className="skill-row-desc">{skill.description}</div>
-      </div>
-      <div className="skill-row-controls">
-        <Switch checked={skill.enabled} onChange={onToggle} label={skill.name} />
-        <button
-          type="button"
-          className="skill-row-remove"
-          onClick={onRemove}
-          title={`Remove ${skill.name}`}
-          aria-label={`Remove ${skill.name}`}
-        >
-          <Icon name="x" size={11} />
-        </button>
       </div>
     </div>
   );

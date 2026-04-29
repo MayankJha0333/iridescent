@@ -1,199 +1,132 @@
 // ─────────────────────────────────────────────────────────────
-// Skills Marketplace modal — browseable catalog of skills and
-// MCP servers users can add to Iridescent. Static catalog mirrors
-// the official Anthropic / Claude Code MCP & skills directory.
+// Skills Marketplace modal — fetches the live catalog from
+// claude-plugins.dev/api/skills and lets the user install any
+// skill at user-scope (~/.claude/skills/) or project-scope
+// (<workspace>/.claude/skills/). Already-installed skills show
+// a scope badge so the user can see where each one lives.
+//
+// Pagination is server-side (the API has 49k+ entries; we ask
+// for 24 at a time and load more on demand). Search hits the
+// API's `q` parameter for relevance ranking rather than
+// filtering client-side.
 // ─────────────────────────────────────────────────────────────
 
-import { useEffect, useMemo, useState } from "react";
-import { send } from "../../lib/rpc";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { send, onMessage, MarketplaceSkill } from "../../lib/rpc";
 import { Icon, IconName } from "../../design/icons";
 
-export interface MarketplaceSkill {
-  id: string;
-  name: string;
+const PAGE_SIZE = 24;
+
+export type InstallScope = "user" | "project";
+
+export interface InstalledMatch {
+  /** "user" | "project" — which directory the matching SKILL.md lives in. */
+  source: "user" | "project";
+  /** Human-readable name from the SKILL.md frontmatter (falls back to id). */
+  displayName: string;
   description: string;
-  category: "MCP" | "Skill" | "Integration";
-  publisher: string;
-  icon: IconName;
-  url: string;
-  /** Suggested install command — surfaced as a hint when the user clicks Add. */
-  install?: string;
 }
-
-const CATALOG: ReadonlyArray<MarketplaceSkill> = [
-  {
-    id: "github",
-    name: "GitHub",
-    description: "Browse repos, manage issues and pull requests, run actions.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "git",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
-    install: "claude mcp add github"
-  },
-  {
-    id: "playwright",
-    name: "Playwright",
-    description: "Drive a real browser to click, type, screenshot, and assert.",
-    category: "MCP",
-    publisher: "Microsoft",
-    icon: "eye",
-    url: "https://github.com/microsoft/playwright-mcp",
-    install: "claude mcp add playwright"
-  },
-  {
-    id: "filesystem",
-    name: "Filesystem",
-    description: "Sandboxed access to a directory tree outside the workspace.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "folder",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-    install: "claude mcp add filesystem"
-  },
-  {
-    id: "postgres",
-    name: "PostgreSQL",
-    description: "Read-only schema introspection and parameterised queries.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "layers",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
-    install: "claude mcp add postgres"
-  },
-  {
-    id: "memory",
-    name: "Memory",
-    description: "Persistent knowledge graph that survives across sessions.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "book",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-    install: "claude mcp add memory"
-  },
-  {
-    id: "linear",
-    name: "Linear",
-    description: "Triage and update Linear issues, projects, and cycles.",
-    category: "MCP",
-    publisher: "Linear",
-    icon: "bolt",
-    url: "https://linear.app/changelog/2024-09-mcp",
-    install: "claude mcp add linear"
-  },
-  {
-    id: "notion",
-    name: "Notion",
-    description: "Search, read, and edit Notion pages and databases.",
-    category: "MCP",
-    publisher: "Notion",
-    icon: "book",
-    url: "https://developers.notion.com/docs/mcp",
-    install: "claude mcp add notion"
-  },
-  {
-    id: "slack",
-    name: "Slack",
-    description: "Read channels, post messages, manage threads.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "cloud",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
-    install: "claude mcp add slack"
-  },
-  {
-    id: "figma",
-    name: "Figma",
-    description: "Read frames, components, and assets from a Figma file.",
-    category: "MCP",
-    publisher: "Community",
-    icon: "edit",
-    url: "https://github.com/GLips/Figma-Context-MCP",
-    install: "claude mcp add figma"
-  },
-  {
-    id: "brave-search",
-    name: "Brave Search",
-    description: "Web search via Brave's privacy-first index.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "search",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
-    install: "claude mcp add brave-search"
-  },
-  {
-    id: "puppeteer",
-    name: "Puppeteer",
-    description: "Headless Chrome automation for scraping and PDFs.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "play",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
-    install: "claude mcp add puppeteer"
-  },
-  {
-    id: "git",
-    name: "Git",
-    description: "Inspect history, branches, diffs, and blame.",
-    category: "MCP",
-    publisher: "Anthropic",
-    icon: "branch",
-    url: "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
-    install: "claude mcp add git"
-  },
-  {
-    id: "skill-pdf",
-    name: "PDF",
-    description: "Read text, fill forms, and split PDFs.",
-    category: "Skill",
-    publisher: "Anthropic",
-    icon: "file",
-    url: "https://code.claude.com/docs/en/skills"
-  },
-  {
-    id: "skill-xlsx",
-    name: "Spreadsheets",
-    description: "Open, edit, compute, and chart .xlsx files.",
-    category: "Skill",
-    publisher: "Anthropic",
-    icon: "layers",
-    url: "https://code.claude.com/docs/en/skills"
-  },
-  {
-    id: "skill-docx",
-    name: "Word documents",
-    description: "Create and edit .docx files with proper formatting.",
-    category: "Skill",
-    publisher: "Anthropic",
-    icon: "file",
-    url: "https://code.claude.com/docs/en/skills"
-  }
-];
-
-const CATEGORIES: ReadonlyArray<{ key: MarketplaceSkill["category"] | "All"; label: string }> = [
-  { key: "All", label: "All" },
-  { key: "MCP", label: "MCP servers" },
-  { key: "Skill", label: "Skills" },
-  { key: "Integration", label: "Integrations" }
-];
 
 export interface SkillsMarketplaceProps {
   open: boolean;
-  installed: ReadonlySet<string>;
+  /**
+   * Discovered skills from disk (passed down from SkillsPicker → here).
+   * Keyed by skill `id` (which is the directory name == marketplace
+   * skill `name`). Used to render "Installed (User|Project)" badges and
+   * swap Install for Uninstall.
+   */
+  installed: ReadonlyMap<string, InstalledMatch>;
   onClose: () => void;
-  onInstall: (skill: MarketplaceSkill) => void;
+}
+
+interface MarketState {
+  status: "idle" | "loading" | "loadingMore" | "ready" | "error";
+  skills: MarketplaceSkill[];
+  total: number;
+  offset: number;
+  error?: string;
 }
 
 export function SkillsMarketplace({
   open,
   installed,
-  onClose,
-  onInstall
+  onClose
 }: SkillsMarketplaceProps) {
   const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<MarketplaceSkill["category"] | "All">("All");
+  const [tab, setTab] = useState<"all" | "installed">("all");
+  const [state, setState] = useState<MarketState>({
+    status: "idle",
+    skills: [],
+    total: 0,
+    offset: 0
+  });
+  const [busyName, setBusyName] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
+  const debounceRef = useRef<number | null>(null);
 
-  // Lock body scroll while the modal is open + close on Escape.
+  // Subscribe to marketplace responses + install results.
+  useEffect(() => {
+    if (!open) return;
+    return onMessage((m) => {
+      if (m.type === "marketplaceList") {
+        setState((prev) => ({
+          status: "ready",
+          // If offset is 0 we replace; otherwise we're paginating.
+          skills: m.offset === 0 ? m.skills : [...prev.skills, ...m.skills],
+          total: m.total,
+          offset: m.offset + m.skills.length
+        }));
+      } else if (m.type === "marketplaceError") {
+        setState((prev) => ({ ...prev, status: "error", error: m.message }));
+      } else if (m.type === "marketplaceInstallResult") {
+        setBusyName(null);
+        const scopeLabel = m.scope === "user" ? "globally" : "for this workspace";
+        if (m.ok) {
+          if (m.action === "uninstall") {
+            setToast({ ok: true, text: `Removed ${m.name} (${scopeLabel}).` });
+          } else {
+            setToast({
+              ok: true,
+              text: `Installed ${m.name} ${scopeLabel}${
+                m.filesWritten ? ` · ${m.filesWritten} files` : ""
+              }.`
+            });
+          }
+        } else {
+          const verb = m.action === "uninstall" ? "remove" : "install";
+          setToast({
+            ok: false,
+            text: `Couldn't ${verb} ${m.name}: ${m.error ?? "unknown error"}.`
+          });
+        }
+        // Auto-clear after a few seconds.
+        window.setTimeout(() => setToast(null), 4000);
+      }
+    });
+  }, [open]);
+
+  // Initial fetch + refetch on query change (debounced).
+  // We deliberately keep the previous `skills` visible while the new
+  // batch loads — clearing them would cause the modal/grid to collapse
+  // and re-expand on every keystroke.
+  useEffect(() => {
+    if (!open) return;
+    setState((s) => ({ ...s, status: "loading" }));
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      send({
+        type: "requestMarketplace",
+        offset: 0,
+        limit: PAGE_SIZE,
+        query: query || undefined
+      });
+    }, 200);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, [open, query]);
+
+  // Lock Esc + click-outside while open.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -203,20 +136,67 @@ export function SkillsMarketplace({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return CATALOG.filter((s) => {
-      if (tab !== "All" && s.category !== tab) return false;
-      if (!q) return true;
-      return (
-        s.name.toLowerCase().includes(q) ||
-        s.description.toLowerCase().includes(q) ||
-        s.publisher.toLowerCase().includes(q)
-      );
+  const loadMore = () => {
+    setState((s) => ({ ...s, status: "loadingMore" }));
+    send({
+      type: "requestMarketplace",
+      offset: state.offset,
+      limit: PAGE_SIZE,
+      query: query || undefined
     });
-  }, [query, tab]);
+  };
+
+  const install = (s: MarketplaceSkill, scope: InstallScope) => {
+    setBusyName(s.name);
+    send({
+      type: "installMarketplaceSkill",
+      target: {
+        name: s.name,
+        repoOwner: s.repoOwner,
+        repoName: s.repoName,
+        directoryPath: s.directoryPath
+      },
+      scope
+    });
+  };
+
+  const uninstall = (name: string, scope: InstallScope) => {
+    setBusyName(name);
+    send({ type: "uninstallMarketplaceSkill", name, scope });
+  };
+
+  // Installed tab pulls directly from the on-disk installed map so the user
+  // always sees their installed skills here, even if they haven't scrolled
+  // through the (49k+ entry) marketplace far enough to hit the matching row.
+  // Must be declared above the `if (!open) return null` early return so the
+  // hook order stays stable across renders.
+  const installedEntries = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows: Array<{
+      name: string;
+      displayName: string;
+      description: string;
+      source: "user" | "project";
+    }> = [];
+    installed.forEach((meta, name) => {
+      if (
+        q &&
+        !name.toLowerCase().includes(q) &&
+        !meta.displayName.toLowerCase().includes(q) &&
+        !meta.description.toLowerCase().includes(q)
+      ) {
+        return;
+      }
+      rows.push({ name, ...meta });
+    });
+    rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return rows;
+  }, [installed, query]);
 
   if (!open) return null;
+
+  const isSearching = state.status === "loading" && state.skills.length > 0;
+  const hasMore = tab === "all" && state.skills.length < state.total;
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -229,9 +209,10 @@ export function SkillsMarketplace({
         <header className="market-head">
           <div className="market-head-titles">
             <span className="market-eyebrow">Marketplace</span>
-            <h2 className="market-title">Skills & MCP servers</h2>
+            <h2 className="market-title">Claude Code Skills</h2>
             <p className="market-sub">
-              Extend Iridescent with capabilities from the Anthropic directory.
+              Browse and install skills from{" "}
+              <span className="market-link">claude-plugins.dev</span>.
             </p>
           </div>
           <button
@@ -249,60 +230,143 @@ export function SkillsMarketplace({
             <Icon name="search" size={13} />
             <input
               type="text"
-              placeholder="Search skills, e.g. github, postgres, figma…"
+              placeholder="Search skills…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
               spellCheck={false}
             />
+            {isSearching ? (
+              <span className="market-search-spinner" aria-label="Searching" />
+            ) : state.total > 0 && state.status === "ready" ? (
+              <span className="market-search-count">
+                {state.skills.length} of {state.total.toLocaleString()}
+              </span>
+            ) : null}
           </div>
           <div className="market-tabs" role="tablist">
-            {CATEGORIES.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                role="tab"
-                aria-selected={tab === c.key}
-                className={`market-tab${tab === c.key ? " active" : ""}`}
-                onClick={() => setTab(c.key)}
-              >
-                {c.label}
-              </button>
-            ))}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "all"}
+              className={`market-tab${tab === "all" ? " active" : ""}`}
+              onClick={() => setTab("all")}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "installed"}
+              className={`market-tab${tab === "installed" ? " active" : ""}`}
+              onClick={() => setTab("installed")}
+              disabled={installed.size === 0}
+              title={
+                installed.size === 0
+                  ? "No skills installed yet"
+                  : `${installed.size} installed`
+              }
+            >
+              Installed
+              {installed.size > 0 && (
+                <span className="market-tab-count">{installed.size}</span>
+              )}
+            </button>
           </div>
         </div>
 
-        <div className="market-grid">
-          {filtered.length === 0 ? (
+        <div
+          className={`market-grid${isSearching && tab === "all" ? " searching" : ""}`}
+          aria-busy={state.status === "loading"}
+        >
+          {tab === "installed" ? (
+            installedEntries.length === 0 ? (
+              <div className="market-empty">
+                <Icon name="search" size={20} />
+                <span>
+                  {installed.size === 0
+                    ? "Nothing installed yet. Install a skill from the All tab."
+                    : `No installed skills match "${query}".`}
+                </span>
+              </div>
+            ) : (
+              installedEntries.map((row) => (
+                <InstalledCard
+                  key={row.name}
+                  name={row.name}
+                  displayName={row.displayName}
+                  description={row.description}
+                  source={row.source}
+                  busy={busyName === row.name}
+                  onUninstall={() => uninstall(row.name, row.source)}
+                />
+              ))
+            )
+          ) : state.status === "loading" && state.skills.length === 0 ? (
+            <div className="market-empty">
+              <span className="market-spinner-lg" />
+              <span>Loading skills…</span>
+            </div>
+          ) : state.status === "error" ? (
+            <div className="market-empty">
+              <Icon name="x" size={20} />
+              <span>Couldn't load: {state.error ?? "network error"}</span>
+            </div>
+          ) : state.skills.length === 0 ? (
             <div className="market-empty">
               <Icon name="search" size={20} />
-              <span>No matches for "{query}".</span>
+              <span>No skills match {query ? `"${query}"` : "your filter"}.</span>
             </div>
           ) : (
-            filtered.map((s) => (
-              <MarketCard
-                key={s.id}
-                skill={s}
-                installed={installed.has(s.id)}
-                onInstall={() => onInstall(s)}
-              />
-            ))
+            <>
+              {state.skills.map((s) => (
+                <MarketCard
+                  key={s.id}
+                  skill={s}
+                  installed={installed.get(s.name) ?? null}
+                  busy={busyName === s.name}
+                  onInstall={(scope) => install(s, scope)}
+                  onUninstall={(scope) => uninstall(s.name, scope)}
+                />
+              ))}
+              {hasMore && (
+                <div className="market-load-more">
+                  <button
+                    type="button"
+                    className="market-card-btn ghost"
+                    onClick={loadMore}
+                    disabled={state.status === "loadingMore"}
+                  >
+                    {state.status === "loadingMore"
+                      ? "Loading…"
+                      : `Load ${Math.min(PAGE_SIZE, state.total - state.skills.length)} more`}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
+        {toast && (
+          <div className={`market-toast${toast.ok ? " ok" : " err"}`}>
+            <Icon name={toast.ok ? "check" : "x"} size={11} />
+            <span>{toast.text}</span>
+          </div>
+        )}
+
         <footer className="market-foot">
-          <span>Backed by the open-source MCP ecosystem.</span>
+          <span>Powered by claude-plugins.dev</span>
           <button
             type="button"
             className="inline-btn"
             onClick={() =>
               send({
                 type: "openExternal",
-                url: "https://github.com/modelcontextprotocol/servers"
+                url: "https://claude-plugins.dev/skills"
               })
             }
           >
-            Browse all on GitHub ↗
+            Browse all ↗
           </button>
         </footer>
       </div>
@@ -310,52 +374,247 @@ export function SkillsMarketplace({
   );
 }
 
+// ── Card ───────────────────────────────────────────────────
+
 function MarketCard({
   skill,
   installed,
-  onInstall
+  busy,
+  onInstall,
+  onUninstall
 }: {
   skill: MarketplaceSkill;
-  installed: boolean;
-  onInstall: () => void;
+  installed: InstalledMatch | null;
+  busy: boolean;
+  onInstall: (scope: InstallScope) => void;
+  onUninstall: (scope: InstallScope) => void;
 }) {
+  const icon = iconFor(skill.name);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
   return (
     <article className={`market-card${installed ? " installed" : ""}`}>
       <div className="market-card-head">
         <span className="market-card-icon">
-          <Icon name={skill.icon} size={14} />
+          <Icon name={icon} size={14} />
         </span>
         <div className="market-card-titles">
           <span className="market-card-name">{skill.name}</span>
           <span className="market-card-pub">
-            <span className="market-card-cat">{skill.category}</span>
-            <span className="market-card-dot" />
-            {skill.publisher}
+            <span className="market-card-cat">@{skill.author}</span>
+            {skill.installs > 0 && (
+              <>
+                <span className="market-card-dot" />
+                {formatCount(skill.installs)} installs
+              </>
+            )}
+            {skill.stars > 0 && (
+              <>
+                <span className="market-card-dot" />
+                ★ {formatCount(skill.stars)}
+              </>
+            )}
           </span>
         </div>
       </div>
-      <p className="market-card-desc">{skill.description}</p>
+      <p className="market-card-desc">{truncate(skill.description, 220)}</p>
       <div className="market-card-actions">
         <button
           type="button"
           className="market-card-btn ghost"
-          onClick={() => send({ type: "openExternal", url: skill.url })}
+          onClick={() =>
+            send({ type: "openExternal", url: skill.sourceUrl })
+          }
+          title={skill.sourceUrl}
         >
           <Icon name="book" size={11} />
-          Docs
+          Source
         </button>
         {installed ? (
-          <span className="market-card-installed">
-            <Icon name="check" size={11} />
-            Added
-          </span>
+          <>
+            <span
+              className={`market-card-installed scope-${installed.source}`}
+              title={`Installed at ${installed.source} scope`}
+            >
+              <Icon name="check" size={11} />
+              {installed.source === "user" ? "Installed · User" : "Installed · Project"}
+            </span>
+            <button
+              type="button"
+              className="market-card-btn danger"
+              onClick={() => onUninstall(installed.source)}
+              disabled={busy}
+              title={`Uninstall (${installed.source} scope)`}
+            >
+              {busy ? "Working…" : "Uninstall"}
+            </button>
+          </>
         ) : (
-          <button type="button" className="market-card-btn primary" onClick={onInstall}>
-            <Icon name="plus" size={11} />
-            Add
-          </button>
+          <div className="market-card-install-split" ref={menuRef}>
+            <button
+              type="button"
+              className="market-card-btn primary split-main"
+              onClick={() => onInstall("project")}
+              disabled={busy}
+              title="Install for this workspace"
+            >
+              {busy ? "Working…" : "Install"}
+            </button>
+            <button
+              type="button"
+              className="market-card-btn primary split-toggle"
+              onClick={() => setMenuOpen((o) => !o)}
+              disabled={busy}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="More install options"
+            >
+              <Icon name="chevronD" size={9} />
+            </button>
+            {menuOpen && (
+              <div className="market-card-install-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="market-card-install-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onInstall("project");
+                  }}
+                >
+                  <span className="mim-title">Install for this workspace</span>
+                  <span className="mim-sub">
+                    Only available while you're working in this project.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="market-card-install-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onInstall("user");
+                  }}
+                >
+                  <span className="mim-title">Install globally</span>
+                  <span className="mim-sub">
+                    Available across every workspace you open.
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </article>
   );
 }
+
+// ── Installed-only card ────────────────────────────────────
+// Rendered in the "Installed" tab. Sources its data from the on-disk
+// SKILL.md (passed via the `installed` map), so it's available even when
+// the marketplace API hasn't paged that far yet.
+
+function InstalledCard({
+  name,
+  displayName,
+  description,
+  source,
+  busy,
+  onUninstall
+}: {
+  name: string;
+  displayName: string;
+  description: string;
+  source: "user" | "project";
+  busy: boolean;
+  onUninstall: () => void;
+}) {
+  const icon = iconFor(name);
+  return (
+    <article className="market-card installed">
+      <div className="market-card-head">
+        <span className="market-card-icon">
+          <Icon name={icon} size={14} />
+        </span>
+        <div className="market-card-titles">
+          <span className="market-card-name">{displayName}</span>
+          <span className="market-card-pub">
+            <span className="market-card-cat">
+              {source === "user" ? "Global" : "This workspace"}
+            </span>
+          </span>
+        </div>
+      </div>
+      <p className="market-card-desc">
+        {description ? truncate(description, 220) : "Installed skill — no description provided."}
+      </p>
+      <div className="market-card-actions">
+        <span
+          className={`market-card-installed scope-${source}`}
+          title={`Installed ${source === "user" ? "globally" : "for this workspace"}`}
+        >
+          <Icon name="check" size={11} />
+          {source === "user" ? "Global" : "Workspace"}
+        </span>
+        <button
+          type="button"
+          className="market-card-btn danger"
+          onClick={onUninstall}
+          disabled={busy}
+        >
+          {busy ? "Working…" : "Uninstall"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+// ── Helpers ────────────────────────────────────────────────
+
+function iconFor(name: string): IconName {
+  const n = name.toLowerCase();
+  if (/web|browser|playwright|test/.test(n)) return "eye";
+  if (/pdf|doc|file|download/.test(n)) return "file";
+  if (/sql|postgres|db|database/.test(n)) return "layers";
+  if (/git|github|branch/.test(n)) return "branch";
+  if (/edit|write|create/.test(n)) return "edit";
+  if (/grep|search|find/.test(n)) return "search";
+  if (/design|ui|ux|frontend/.test(n)) return "edit";
+  if (/architect/.test(n)) return "layers";
+  return "bolt";
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n).replace(/\s+\S*$/, "") + "…";
+}
+
+/**
+ * Re-export so SkillsPicker can build the `installed` map without
+ * pulling in marketplace.ts directly.
+ */
+export type { MarketplaceSkill };

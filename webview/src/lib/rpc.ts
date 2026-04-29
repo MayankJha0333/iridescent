@@ -71,6 +71,31 @@ export interface FileSearchResult {
   name: string;
 }
 
+// ── Marketplace ────────────────────────────────────────────
+
+export interface MarketplaceSkill {
+  id: string;
+  name: string;
+  /** "@author/repo/skill-name" — display + match key. */
+  namespace: string;
+  description: string;
+  author: string;
+  stars: number;
+  installs: number;
+  sourceUrl: string;
+  repoOwner: string;
+  repoName: string;
+  directoryPath: string;
+}
+
+/** Subset needed to drive install. */
+export interface MarketplaceInstallTarget {
+  name: string;
+  repoOwner: string;
+  repoName: string;
+  directoryPath: string;
+}
+
 export interface HistoryEntry {
   id: string;
   title: string;
@@ -102,7 +127,18 @@ export type Outbound =
   | { type: "requestHistory" }
   | { type: "loadSession"; id: string }
   | { type: "deleteHistoryEntry"; id: string }
-  | { type: "setSkillEnabled"; id: string; enabled: boolean };
+  | { type: "setSkillEnabled"; id: string; enabled: boolean }
+  | { type: "requestMarketplace"; offset?: number; limit?: number; query?: string }
+  | {
+      type: "installMarketplaceSkill";
+      target: MarketplaceInstallTarget;
+      scope: "user" | "project";
+    }
+  | {
+      type: "uninstallMarketplaceSkill";
+      name: string;
+      scope: "user" | "project";
+    };
 
 // ── Inbound (extension → webview) ─────────────────────────────
 
@@ -131,7 +167,25 @@ export type Inbound =
       text: string;
     }
   | { type: "historyList"; sessions: HistoryEntry[] }
-  | { type: "loadedSession"; events: TimelineEvent[]; title: string };
+  | { type: "loadedSession"; events: TimelineEvent[]; title: string }
+  | {
+      type: "marketplaceList";
+      skills: MarketplaceSkill[];
+      total: number;
+      offset: number;
+      limit: number;
+    }
+  | { type: "marketplaceError"; message: string }
+  | {
+      type: "marketplaceInstallResult";
+      action: "install" | "uninstall";
+      name: string;
+      ok: boolean;
+      scope: "user" | "project";
+      installPath?: string;
+      filesWritten?: number;
+      error?: string;
+    };
 
 // ── API ───────────────────────────────────────────────────────
 
