@@ -10,6 +10,9 @@ export interface ClaudeCliOpts {
   cwd: string;
   permissionMode?: PermissionMode;
   allowedBashPatterns?: string[];
+  /** Skill ids the user toggled OFF in the picker. Enforced via
+   *  --disallowedTools "Skill(<id>)" plus a system-prompt append. */
+  disabledSkills?: string[];
   getResumeSessionId?: () => string | undefined;
   setResumeSessionId?: (id: string) => void;
 }
@@ -134,6 +137,26 @@ export function buildArgs(
       ...opts.allowedBashPatterns.map((p) => `Bash(${regexToCliPattern(p)})`)
     ];
     args.push("--allowedTools", ...tools);
+  }
+
+  // Skills the user has toggled off in the picker need to be *actually*
+  // blocked. Belt-and-suspenders:
+  //   1. --disallowedTools "Skill(<name>)" — if Claude Code's permission
+  //      system honors per-skill patterns, this is hard enforcement.
+  //   2. --append-system-prompt — even if the flag pattern is ignored, the
+  //      agent reads the appended instruction and refuses. Together they
+  //      cover both the gate path and the model-decides path.
+  const disabled = (opts.disabledSkills ?? []).filter((s) => s.length > 0);
+  if (disabled.length > 0) {
+    args.push(
+      "--disallowedTools",
+      ...disabled.map((id) => `Skill(${id})`)
+    );
+    const list = disabled.map((id) => `\`${id}\``).join(", ");
+    args.push(
+      "--append-system-prompt",
+      `The user has disabled the following Claude Code skills via Iridescent's Skills picker: ${list}. Do not invoke any of them, even if a task would benefit. If you would normally use a disabled skill, tell the user which skill is disabled and ask them to re-enable it from the Skills picker before retrying. All other skills remain available.`
+    );
   }
 
   const resumeId = opts.getResumeSessionId?.();

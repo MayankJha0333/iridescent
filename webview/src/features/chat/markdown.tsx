@@ -3,6 +3,7 @@
 //   - fenced code blocks ``` with language + copy button
 //   - headings (#–######)
 //   - unordered (-, *) and ordered (1.) lists
+//   - GitHub-style pipe tables (with optional :--: alignment)
 //   - inline code, bold, italic, links
 // Intentionally small — no remark/HTML parsing in the webview.
 // ─────────────────────────────────────────────────────────────
@@ -76,6 +77,27 @@ export function renderMarkdown(src: string): ReactNode[] {
       continue;
     }
 
+    // Pipe tables — current line starts with `|` and the next line is a
+    // separator like `|---|---|`. Walk until we leave the pipe block.
+    if (isTableStart(lines, i)) {
+      const aligns = parseAlignments(lines[i + 1]);
+      const header = parseRow(lines[i]);
+      i += 2;
+      const rows: string[][] = [];
+      while (
+        i < lines.length &&
+        lines[i].trim().length > 0 &&
+        lines[i].includes("|")
+      ) {
+        rows.push(parseRow(lines[i]));
+        i++;
+      }
+      out.push(
+        <Table key={key++} header={header} rows={rows} aligns={aligns} keyBase={key++} />
+      );
+      continue;
+    }
+
     if (line.trim() === "") {
       i++;
       continue;
@@ -88,7 +110,8 @@ export function renderMarkdown(src: string): ReactNode[] {
       !lines[i].startsWith("```") &&
       !/^#{1,6}\s/.test(lines[i]) &&
       !/^[-*]\s/.test(lines[i]) &&
-      !/^\d+\.\s/.test(lines[i])
+      !/^\d+\.\s/.test(lines[i]) &&
+      !isTableStart(lines, i)
     ) {
       para.push(lines[i]);
       i++;
@@ -176,4 +199,90 @@ function inline(text: string, keyBase: number): ReactNode[] {
     rest = rest.slice(earliest.idx + earliest.match[0].length);
   }
   return nodes;
+}
+
+// ── Table support ──────────────────────────────────────────
+// GitHub-flavored pipe tables: a header row, a separator row of
+// `:?-+:?` cells (which also encodes column alignment), and any
+// number of data rows. Pipes at the start/end of a row are
+// optional in the spec, so we strip them defensively.
+
+type Align = "left" | "right" | "center" | "default";
+
+function isTableStart(lines: string[], i: number): boolean {
+  const head = lines[i];
+  const sep = lines[i + 1];
+  if (!head || !sep) return false;
+  if (!head.includes("|")) return false;
+  // Separator must be made of cells of optional `:`, dashes, optional `:`,
+  // separated by pipes. Allow leading/trailing pipe + whitespace.
+  return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/.test(sep);
+}
+
+function parseRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\||\|$/g, "");
+  return trimmed.split("|").map((c) => c.trim());
+}
+
+function parseAlignments(sepLine: string): Align[] {
+  return parseRow(sepLine).map((cell) => {
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return "default";
+  });
+}
+
+function Table({
+  header,
+  rows,
+  aligns,
+  keyBase
+}: {
+  header: string[];
+  rows: string[][];
+  aligns: Align[];
+  keyBase: number;
+}) {
+  const colCount = Math.max(header.length, ...rows.map((r) => r.length));
+  return (
+    <div className="md-table-wrap">
+      <table className="md-table">
+        <thead>
+          <tr>
+            {Array.from({ length: colCount }).map((_, ci) => {
+              const a = aligns[ci] ?? "default";
+              return (
+                <th
+                  key={`th-${ci}`}
+                  className={a !== "default" ? `md-th-${a}` : undefined}
+                >
+                  {inline(header[ci] ?? "", keyBase * 100 + ci)}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={`tr-${ri}`}>
+              {Array.from({ length: colCount }).map((_, ci) => {
+                const a = aligns[ci] ?? "default";
+                return (
+                  <td
+                    key={`td-${ri}-${ci}`}
+                    className={a !== "default" ? `md-td-${a}` : undefined}
+                  >
+                    {inline(row[ci] ?? "", keyBase * 1000 + ri * 50 + ci)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }

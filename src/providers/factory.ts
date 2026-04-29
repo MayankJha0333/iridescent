@@ -12,6 +12,9 @@ export interface ProviderContext {
   cwd: string;
   permissionMode?: PermissionMode;
   allowedBashPatterns?: string[];
+  /** Skill ids the user has toggled OFF in the picker. Subscription mode
+   *  enforces them via --disallowedTools + --append-system-prompt. */
+  disabledSkills?: string[];
   getResumeSessionId?: () => string | undefined;
   setResumeSessionId?: (id: string) => void;
 }
@@ -40,6 +43,7 @@ export function createProvider(ctx: ProviderContext): ChatProvider {
       cwd: ctx.cwd,
       permissionMode: ctx.permissionMode,
       allowedBashPatterns: ctx.allowedBashPatterns,
+      disabledSkills: ctx.disabledSkills,
       getResumeSessionId: ctx.getResumeSessionId,
       setResumeSessionId: ctx.setResumeSessionId
     });

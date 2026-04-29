@@ -62,11 +62,21 @@ export interface SkillInfo {
   enabled: boolean;
   toggleable: boolean;
   external?: boolean;
+  /** "user" or "project" for filesystem-discovered skills. */
+  source?: "user" | "project";
 }
 
 export interface FileSearchResult {
   path: string;
   name: string;
+}
+
+export interface HistoryEntry {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  eventCount: number;
 }
 
 // ── Outbound (webview → extension) ────────────────────────────
@@ -88,7 +98,11 @@ export type Outbound =
   | { type: "requestModels" }
   | { type: "requestSkills" }
   | { type: "requestFileSearch"; id: string; query: string }
-  | { type: "captureSelection" };
+  | { type: "captureSelection" }
+  | { type: "requestHistory" }
+  | { type: "loadSession"; id: string }
+  | { type: "deleteHistoryEntry"; id: string }
+  | { type: "setSkillEnabled"; id: string; enabled: boolean };
 
 // ── Inbound (extension → webview) ─────────────────────────────
 
@@ -115,7 +129,9 @@ export type Inbound =
       startLine: number;
       endLine: number;
       text: string;
-    };
+    }
+  | { type: "historyList"; sessions: HistoryEntry[] }
+  | { type: "loadedSession"; events: TimelineEvent[]; title: string };
 
 // ── API ───────────────────────────────────────────────────────
 

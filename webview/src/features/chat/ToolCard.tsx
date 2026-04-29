@@ -4,7 +4,7 @@
 // Expanded view shows raw input and (split) bash stdout / stderr.
 // ─────────────────────────────────────────────────────────────
 
-import { ReactNode, MouseEvent, useEffect, useState } from "react";
+import { ReactNode, MouseEvent, useState } from "react";
 import { Icon, IconName } from "../../design/icons";
 
 export interface ToolCardProps {
@@ -24,9 +24,10 @@ export function ToolCard({ name, input, result, isError, pending }: ToolCardProp
   const exitCode = extractExitCode(result);
   const isBash = /bash|run|shell|exec/i.test(name);
 
-  useEffect(() => {
-    if (isError) setOpen(true);
-  }, [isError]);
+  // Tool cards stay collapsed by default — including on error. The header
+  // already carries the failure signal (red border + ✕ status + exit-code
+  // chip), so a stack of failing commands no longer pushes the rest of
+  // the conversation off-screen. Click the head to expand when needed.
 
   const copyResult = async (e: MouseEvent) => {
     e.stopPropagation();
@@ -239,6 +240,9 @@ function BashOutput({ result, isError, onCopy, copied }: BashOutputProps) {
 
 function iconFor(name: string): IconName {
   const n = name.toLowerCase();
+  if (n === "skill" || n.startsWith("skill")) return "bolt";
+  if (n === "task") return "layers";
+  if (n === "webfetch" || n === "web_fetch") return "cloud";
   if (/read|view|open/.test(n)) return "file";
   if (/write|edit|create/.test(n)) return "edit";
   if (/bash|run|shell|exec/.test(n)) return "terminal";

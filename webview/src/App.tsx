@@ -179,6 +179,15 @@ export function App() {
         case "fileSearchResults":
           // Consumed by MentionPopover via its own subscription.
           break;
+        case "historyList":
+          // Consumed by HistoryDrawer via its own subscription.
+          break;
+        case "loadedSession":
+          dispatchTimeline({ type: "replace", events: m.events });
+          setStreaming("");
+          setError(null);
+          setBusy(false);
+          break;
       }
     });
     send({ type: "refreshAuth" });

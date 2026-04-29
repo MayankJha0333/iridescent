@@ -19,6 +19,7 @@ import { ContextStrip } from "./ContextStrip";
 import { EmptyState } from "./EmptyState";
 import { ErrorBanner } from "./ErrorBanner";
 import { RewindModal } from "./RewindModal";
+import { HistoryDrawer } from "./HistoryDrawer";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
@@ -71,6 +72,7 @@ export function ChatScreen({
     turnId: string;
     messagesAfter: number;
   } | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const grouped = useMemo(() => groupEvents(events), [events]);
 
@@ -90,7 +92,12 @@ export function ChatScreen({
 
   return (
     <>
-      <Header authMode={authMode} permissionMode={permissionMode} busy={busy} />
+      <Header
+        authMode={authMode}
+        permissionMode={permissionMode}
+        busy={busy}
+        onOpenHistory={() => setHistoryOpen(true)}
+      />
 
       <div className="log" ref={logRef} onScroll={onScroll}>
         {grouped.length === 0 && !streaming && <EmptyState />}
@@ -113,6 +120,15 @@ export function ChatScreen({
           }}
         />
       )}
+
+      <HistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onSelect={(id) => {
+          send({ type: "loadSession", id });
+          setHistoryOpen(false);
+        }}
+      />
 
       {userScrolled.current && (
         <button

@@ -16,6 +16,8 @@ import {
 } from "../secrets.js";
 import { AuthMode, createProvider } from "../providers/factory.js";
 import { CheckpointService } from "../services/checkpoint.js";
+import { HistoryService, deriveTitle } from "../services/history.js";
+import { discoverClaudeSkills } from "../services/claude-skills.js";
 
 export class ChatPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = "iridescent.chat";
@@ -25,8 +27,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private orchestrator?: Orchestrator;
   private resumeId?: string;
   private checkpoints?: CheckpointService;
+  private history: HistoryService;
+  private saveTimer?: NodeJS.Timeout;
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
+    this.history = new HistoryService(ctx);
     this.initSession();
   }
 
@@ -35,12 +40,29 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     this.session.onEvent((e) => {
       this.post({ type: "timeline", event: e });
       this.trackFileForCheckpoint(e);
+      this.scheduleSave();
     });
     this.session.onUserTurn(async (eventId) => {
       if (this.checkpoints) {
         await this.checkpoints.captureBefore(eventId);
       }
     });
+  }
+
+  /** Debounced save — coalesces bursts of timeline events into one write. */
+  private scheduleSave() {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      void this.history.save({
+        id: this.session.id,
+        title: deriveTitle(this.session.timeline),
+        createdAt: this.session.createdAt,
+        updatedAt: Date.now(),
+        messages: this.session.messages,
+        timeline: this.session.timeline,
+        resumeId: this.resumeId
+      });
+    }, 400);
   }
 
   /**
@@ -87,8 +109,60 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
     this.post({ type: "hello", sessionId: this.session.id });
     void this.broadcastAuthState();
-    this.replayTimeline();
+    // Try to pick up the most recently used chat instead of starting fresh.
+    // Without this, every VS Code reload / extension activation would create
+    // a new Session id and the user's "one chat" would split across
+    // history entries on each reload. The restore is best-effort: if there's
+    // no prior session (or none with user content) we just keep the empty
+    // session that the constructor created.
+    void this.restoreLatestSession().then(() => {
+      this.replayTimeline();
+    });
     this.wireEditorContext();
+  }
+
+  /**
+   * On startup, list saved sessions and adopt the most recently updated one
+   * as the current session. The user can still click "New Chat" to start a
+   * fresh one explicitly.
+   */
+  private async restoreLatestSession(): Promise<void> {
+    // Only restore if our in-memory session is still empty — otherwise we'd
+    // clobber a user that's already typing. (Ordinarily the constructor's
+    // fresh session is empty until the first prompt.)
+    if (this.session.timeline.length > 0) return;
+    try {
+      const list = await this.history.list();
+      if (list.length === 0) return;
+      const latest = list[0]; // already sorted by updatedAt desc
+      const stored = await this.history.load(latest.id);
+      if (!stored || stored.timeline.length === 0) return;
+
+      this.session = new Session(stored.title);
+      Object.defineProperty(this.session, "id", { value: stored.id });
+      Object.defineProperty(this.session, "createdAt", { value: stored.createdAt });
+      this.session.messages = stored.messages;
+      this.session.timeline = stored.timeline;
+      this.session.title = stored.title;
+      this.resumeId = stored.resumeId;
+
+      // Re-attach the same listener wiring `initSession` would have set.
+      // (We replaced this.session, so the prior closure now points at a
+      // dead Session object.)
+      this.session.onEvent((e) => {
+        this.post({ type: "timeline", event: e });
+        this.trackFileForCheckpoint(e);
+        this.scheduleSave();
+      });
+      this.session.onUserTurn(async (eventId) => {
+        if (this.checkpoints) {
+          await this.checkpoints.captureBefore(eventId);
+        }
+      });
+    } catch {
+      // Restore is best-effort; on any failure we fall through to the
+      // empty session created by the constructor.
+    }
   }
 
   private wireEditorContext() {
@@ -144,7 +218,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     });
     if (authed) {
       await this.broadcastModels();
-      this.broadcastSkills();
+      await this.broadcastSkills();
     }
   }
 
@@ -266,7 +340,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         await this.broadcastModels();
         break;
       case "requestSkills":
-        this.broadcastSkills();
+        await this.broadcastSkills();
+        break;
+      case "setSkillEnabled":
+        if (typeof msg.id === "string" && typeof msg.enabled === "boolean") {
+          await this.setSkillEnabled(msg.id, msg.enabled);
+        }
         break;
       case "requestFileSearch":
         await this.handleFileSearch(
@@ -277,7 +356,63 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "captureSelection":
         this.sendSelectionToChat();
         break;
+      case "requestHistory":
+        await this.broadcastHistory();
+        break;
+      case "loadSession":
+        if (typeof msg.id === "string") await this.loadHistorySession(msg.id);
+        break;
+      case "deleteHistoryEntry":
+        if (typeof msg.id === "string") {
+          await this.history.delete(msg.id);
+          await this.broadcastHistory();
+        }
+        break;
     }
+  }
+
+  private async broadcastHistory() {
+    const sessions = await this.history.list();
+    this.post({ type: "historyList", sessions });
+  }
+
+  private async loadHistorySession(id: string) {
+    const stored = await this.history.load(id);
+    if (!stored) {
+      this.post({ type: "error", message: "Session not found." });
+      return;
+    }
+    // Replace the in-memory session with the stored one. We don't construct a
+    // brand-new Session() because we need the id/createdAt to match for
+    // subsequent saves to overwrite the same file.
+    this.orchestrator?.cancel();
+    this.orchestrator = undefined;
+    this.checkpoints?.clear();
+    this.checkpoints = undefined;
+    this.resumeId = stored.resumeId;
+
+    this.session = new Session(stored.title);
+    // Splice in the persisted state. (The Session constructor already set a
+    // fresh id/createdAt — overwrite via Object.defineProperty since they're
+    // declared readonly. Cleaner than reworking Session's API for one site.)
+    Object.defineProperty(this.session, "id", { value: stored.id });
+    Object.defineProperty(this.session, "createdAt", { value: stored.createdAt });
+    this.session.messages = stored.messages;
+    this.session.timeline = stored.timeline;
+    this.session.title = stored.title;
+
+    this.session.onEvent((e) => {
+      this.post({ type: "timeline", event: e });
+      this.trackFileForCheckpoint(e);
+      this.scheduleSave();
+    });
+    this.session.onUserTurn(async (eventId) => {
+      if (this.checkpoints) {
+        await this.checkpoints.captureBefore(eventId);
+      }
+    });
+
+    this.post({ type: "loadedSession", events: stored.timeline, title: stored.title });
   }
 
   // ── Models / skills / search ─────────────────────────────────
@@ -291,9 +426,31 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private broadcastSkills() {
+  private static readonly DISABLED_SKILLS_KEY = "iridescent.disabledSkills.v1";
+
+  private async broadcastSkills() {
     const mode = getAuthMode(this.ctx);
-    this.post({ type: "skills", skills: availableSkills(mode) });
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const disabled = new Set(
+      this.ctx.globalState.get<string[]>(ChatPanelProvider.DISABLED_SKILLS_KEY, [])
+    );
+    const skills = await availableSkills(mode, workspaceRoot, disabled);
+    this.post({ type: "skills", skills });
+  }
+
+  private async setSkillEnabled(id: string, enabled: boolean): Promise<void> {
+    const list = this.ctx.globalState.get<string[]>(
+      ChatPanelProvider.DISABLED_SKILLS_KEY,
+      []
+    );
+    const set = new Set(list);
+    if (enabled) set.delete(id);
+    else set.add(id);
+    await this.ctx.globalState.update(
+      ChatPanelProvider.DISABLED_SKILLS_KEY,
+      Array.from(set)
+    );
+    await this.broadcastSkills();
   }
 
   private async handleFileSearch(query: string, id: string) {
@@ -375,6 +532,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const maxTokens = cfg.get<number>("maxTokens", 4096);
     const permMode = cfg.get<PermissionMode>("permissionMode", "default");
     const bashAllowlist = cfg.get<string[]>("allowedBashPatterns", []);
+    // Skills the user toggled off in the picker. Passed through to the CLI
+    // so it actually skips them at invocation time, not just visually.
+    const disabledSkills = this.ctx.globalState.get<string[]>(
+      ChatPanelProvider.DISABLED_SKILLS_KEY,
+      []
+    );
 
     const mode = getAuthMode(this.ctx);
     if (!mode) {
@@ -399,6 +562,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           cwd: workspaceRoot,
           permissionMode: permMode,
           allowedBashPatterns: bashAllowlist,
+          disabledSkills,
           getResumeSessionId: () => this.resumeId,
           setResumeSessionId: (id) => {
             this.resumeId = id;
@@ -593,10 +757,25 @@ export interface SkillInfo {
   enabled: boolean;
   toggleable: boolean;
   external?: boolean;
+  /** "user" / "project" for filesystem-discovered skills; undefined otherwise. */
+  source?: "user" | "project";
 }
 
-/** Skills surfaced in the chat composer. Mirrors Claude Code's tool taxonomy. */
-function availableSkills(authMode: AuthMode | undefined): SkillInfo[] {
+/**
+ * Skills surfaced in the chat composer. Mirrors Claude Code's tool taxonomy
+ * plus user-installed skills discovered on disk under ~/.claude/skills/ and
+ * <workspace>/.claude/skills/.
+ *
+ * `disabled` carries the set of skill ids the user has toggled off in the
+ * picker — used to flip `enabled: false` so the UI reflects state, even
+ * though the toggle is a preference (Claude Code auto-loads skills based
+ * on the prompt; we can't actually filter them at the CLI layer).
+ */
+async function availableSkills(
+  authMode: AuthMode | undefined,
+  workspaceRoot: string | undefined,
+  disabled: Set<string>
+): Promise<SkillInfo[]> {
   // Always-on tools shipped by Iridescent.
   const tools: SkillInfo[] = [
     { id: "fs_read",  name: "Read",  category: "tool", description: "Read files in the workspace", enabled: true,  toggleable: false },
@@ -616,12 +795,32 @@ function availableSkills(authMode: AuthMode | undefined): SkillInfo[] {
       ]
     : [];
 
+  // User-installed skills from disk. Both `~/.claude/skills/<name>/SKILL.md`
+  // and `<ws>/.claude/skills/<name>/SKILL.md` are scanned; failures are
+  // swallowed (missing dir, unreadable files, etc.).
+  let custom: SkillInfo[] = [];
+  try {
+    const found = await discoverClaudeSkills(workspaceRoot);
+    custom = found.map((s) => ({
+      id: s.id,
+      name: s.name,
+      category: "skill",
+      description: s.description,
+      enabled: !disabled.has(s.id),
+      toggleable: true,
+      external: true,
+      source: s.source
+    }));
+  } catch {
+    custom = [];
+  }
+
   // Optional integrations (placeholder — not yet wired).
   const integrations: SkillInfo[] = [
     { id: "mcp", name: "MCP Servers", category: "integration", description: "Model Context Protocol servers (configure to enable)", enabled: false, toggleable: false }
   ];
 
-  return [...tools, ...claudeCode, ...integrations];
+  return [...tools, ...claudeCode, ...custom, ...integrations];
 }
 
 export type { AuthMode };

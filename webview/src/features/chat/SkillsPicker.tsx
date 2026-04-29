@@ -94,15 +94,23 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
     setAdded((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)));
   };
 
+  // Count enabled across every category we surface — extension-provided
+  // (built-ins, CLI, discovered, integrations) honor their own `enabled`
+  // flag, marketplace adds carry their own boolean.
   const enabledExtras = added.filter((s) => s.enabled).length;
-  const enabledBuiltins = skills.filter((s) => s.enabled).length;
-  const totalEnabled = enabledExtras + enabledBuiltins;
+  const enabledExtension = skills.filter((s) => s.enabled).length;
+  const totalEnabled = enabledExtras + enabledExtension;
   const totalCount = skills.length + added.length;
 
   const grouped = useMemo(
     () => ({
       tool: skills.filter((s) => s.category === "tool"),
-      skill: skills.filter((s) => s.category === "skill"),
+      // CLI-native skills (Glob/Grep/Edit/WebFetch/Task) carry external=true
+      // but no `source`. Filesystem-discovered skills (~/.claude/skills,
+      // <ws>/.claude/skills) carry `source` so we can split them out.
+      cli: skills.filter((s) => s.category === "skill" && !s.source),
+      user: skills.filter((s) => s.source === "user"),
+      project: skills.filter((s) => s.source === "project"),
       integration: skills.filter((s) => s.category === "integration")
     }),
     [skills]
@@ -146,10 +154,24 @@ export function SkillsPicker({ skills }: SkillsPickerProps) {
                   ))}
                 </SkillSection>
               )}
-              {grouped.skill.length > 0 && (
+              {grouped.cli.length > 0 && (
                 <SkillSection title="Claude Code agent">
-                  {grouped.skill.map((s) => (
+                  {grouped.cli.map((s) => (
                     <SkillRow key={s.id} skill={s} />
+                  ))}
+                </SkillSection>
+              )}
+              {grouped.project.length > 0 && (
+                <SkillSection title="Project skills">
+                  {grouped.project.map((s) => (
+                    <DiscoveredRow key={s.id} skill={s} />
+                  ))}
+                </SkillSection>
+              )}
+              {grouped.user.length > 0 && (
+                <SkillSection title="Your skills">
+                  {grouped.user.map((s) => (
+                    <DiscoveredRow key={s.id} skill={s} />
                   ))}
                 </SkillSection>
               )}
@@ -231,6 +253,43 @@ function SkillRow({ skill }: { skill: SkillInfo }) {
       <span className={`skill-row-state${skill.enabled ? " on" : ""}`}>
         {skill.enabled ? <Icon name="check" size={11} /> : <Icon name="x" size={11} />}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Filesystem-discovered skill row — Read-only metadata (name, description,
+ * source tag) plus a Switch that flips enabled state via the setSkillEnabled
+ * RPC. No remove button: the user manages the underlying SKILL.md file
+ * outside the extension.
+ */
+function DiscoveredRow({ skill }: { skill: SkillInfo }) {
+  const icon = iconFor(skill.id);
+  return (
+    <div className={`skill-row toggleable${skill.enabled ? " enabled" : ""}`}>
+      <span className="skill-row-icon">
+        <Icon name={icon} size={12} />
+      </span>
+      <div className="skill-row-body">
+        <div className="skill-row-name">
+          {skill.name}
+          {skill.source && (
+            <span className="skill-row-tag market">
+              {skill.source === "user" ? "User" : "Project"}
+            </span>
+          )}
+        </div>
+        <div className="skill-row-desc">{skill.description}</div>
+      </div>
+      <div className="skill-row-controls">
+        <Switch
+          checked={skill.enabled}
+          onChange={() =>
+            send({ type: "setSkillEnabled", id: skill.id, enabled: !skill.enabled })
+          }
+          label={skill.name}
+        />
+      </div>
     </div>
   );
 }

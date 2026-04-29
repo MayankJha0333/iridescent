@@ -14,9 +14,10 @@ interface HeaderProps {
   authMode: AuthMode | null;
   permissionMode: PermissionMode;
   busy: boolean;
+  onOpenHistory: () => void;
 }
 
-export function Header({ authMode, permissionMode, busy }: HeaderProps) {
+export function Header({ authMode, permissionMode, busy, onOpenHistory }: HeaderProps) {
   const mode = findMode(permissionMode);
   const authLabel = authMode === "subscription" ? "subscription" : "api key";
   return (
@@ -46,6 +47,12 @@ export function Header({ authMode, permissionMode, busy }: HeaderProps) {
       </div>
 
       <div className="hdr-right">
+        <IconButton
+          icon="history"
+          title="Chat history"
+          size={28}
+          onClick={onOpenHistory}
+        />
         <IconButton
           icon="plus"
           title="New chat"
