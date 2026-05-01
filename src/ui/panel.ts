@@ -3,7 +3,7 @@ import { Session } from "../core/session.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { defaultTools } from "../tools/index.js";
 import { createGate } from "../core/permissions.js";
-import { PermissionMode, StreamDelta } from "../core/types.js";
+import { PermissionMode, StreamDelta, PlanRevisionMeta } from "../core/types.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import {
   getApiKey,
@@ -17,6 +17,8 @@ import {
 import { AuthMode, createProvider } from "../providers/factory.js";
 import { CheckpointService } from "../services/checkpoint.js";
 import { HistoryService, deriveTitle } from "../services/history.js";
+import { PlanDecorationService } from "../services/plan-decorations.js";
+import { PlanArtifactManager } from "./plan-artifact-panel.js";
 import { discoverClaudeSkills } from "../services/claude-skills.js";
 import {
   fetchMarketplace,
@@ -35,18 +37,56 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private resumeId?: string;
   private checkpoints?: CheckpointService;
   private history: HistoryService;
+  private decorations: PlanDecorationService;
+  private artifacts: PlanArtifactManager;
   private saveTimer?: NodeJS.Timeout;
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
     this.history = new HistoryService(ctx);
+    this.decorations = new PlanDecorationService(
+      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    );
+    this.artifacts = new PlanArtifactManager(ctx);
+    // Artifact panels share the chat panel's RPC handler so any user action
+    // (comment, accept, reply, …) reaches the same session no matter which
+    // surface fired it.
+    this.artifacts.setMessageHandler((msg) => this.onMessage(msg));
+    ctx.subscriptions.push({
+      dispose: () => {
+        this.decorations.dispose();
+        this.artifacts.closeAll();
+      }
+    });
     this.initSession();
   }
 
   private initSession() {
     this.session = new Session();
+    this.attachSessionListeners();
+  }
+
+  /**
+   * Wire timeline + per-turn + per-plan-revision hooks onto the current
+   * session. Factored out so it can be reused after `loadHistorySession`
+   * and `restoreLatestSession` swap the session instance.
+   */
+  private attachSessionListeners() {
     this.session.onEvent((e) => {
       this.post({ type: "timeline", event: e });
       this.trackFileForCheckpoint(e);
+      // Each plan revision is its own restore point so rewind can land on
+      // any revision and bring file state + comment threads with it.
+      if (e.kind === "plan_revision" && this.checkpoints) {
+        void this.checkpoints.captureBeforePlanRevision(e.id);
+      }
+      // Mirror plan changes into editor decorations so comments + active
+      // step are visible inline next to the source.
+      if (
+        e.kind === "plan_revision" ||
+        e.kind === "plan_comment"
+      ) {
+        this.decorations.syncFromTimeline(this.session.timeline);
+      }
       this.scheduleSave();
     });
     this.session.onUserTurn(async (eventId) => {
@@ -156,16 +196,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       // Re-attach the same listener wiring `initSession` would have set.
       // (We replaced this.session, so the prior closure now points at a
       // dead Session object.)
-      this.session.onEvent((e) => {
-        this.post({ type: "timeline", event: e });
-        this.trackFileForCheckpoint(e);
-        this.scheduleSave();
-      });
-      this.session.onUserTurn(async (eventId) => {
-        if (this.checkpoints) {
-          await this.checkpoints.captureBefore(eventId);
-        }
-      });
+      this.attachSessionListeners();
     } catch {
       // Restore is best-effort; on any failure we fall through to the
       // empty session created by the constructor.
@@ -175,7 +206,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private wireEditorContext() {
     const broadcast = () => this.broadcastEditorContext();
     this.ctx.subscriptions.push(
-      vscode.window.onDidChangeActiveTextEditor(broadcast),
+      vscode.window.onDidChangeActiveTextEditor((ed) => {
+        broadcast();
+        if (ed) this.decorations.refreshEditor(ed, this.session.timeline);
+      }),
       vscode.window.onDidChangeTextEditorSelection(broadcast)
     );
     broadcast();
@@ -253,6 +287,46 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
    * selection) and surface it inside the composer as a clean attachment.
    * Strips stray slash prefixes and other formatting artifacts.
    */
+  /**
+   * Right-click → "Iridescent: Comment on selection". Anchors a plan_comment
+   * to the active editor's current selection on the latest plan revision.
+   * The comment carries `quote` = the selected text so the existing
+   * highlight + jump-to-passage flow lights up in the chat panel.
+   */
+  commentOnEditorSelection() {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) {
+      vscode.window.showInformationMessage("Iridescent: open a file first.");
+      return;
+    }
+    const sel = ed.selection;
+    if (sel.isEmpty) {
+      vscode.window.showInformationMessage("Iridescent: select some code first.");
+      return;
+    }
+    const latest = [...this.session.timeline]
+      .reverse()
+      .find((e) => e.kind === "plan_revision");
+    if (!latest) {
+      vscode.window.showInformationMessage(
+        "Iridescent: no active plan to comment on. Run a /plan turn first."
+      );
+      return;
+    }
+    const revisionId = (latest.meta as { revisionId?: string }).revisionId ?? "";
+    const quote = ed.document.getText(sel);
+    void vscode.window
+      .showInputBox({
+        prompt: "Comment on selection",
+        placeHolder: "Leave a comment for the agent…"
+      })
+      .then((body) => {
+        if (!body || !body.trim()) return;
+        this.handlePlanComment(revisionId, "__inline__", body, quote);
+        this.reveal();
+      });
+  }
+
   sendSelectionToChat() {
     const ed = vscode.window.activeTextEditor;
     if (!ed) {
@@ -280,6 +354,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   private replayTimeline() {
     for (const e of this.session.timeline) this.post({ type: "timeline", event: e });
+    this.decorations.syncFromTimeline(this.session.timeline);
   }
 
   private async onMessage(msg: { type: string; [k: string]: unknown }) {
@@ -402,7 +477,413 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           await this.broadcastHistory();
         }
         break;
+      case "planComment":
+        if (
+          typeof msg.revisionId === "string" &&
+          typeof msg.taskId === "string" &&
+          typeof msg.body === "string"
+        ) {
+          this.handlePlanComment(
+            msg.revisionId,
+            msg.taskId,
+            msg.body,
+            typeof msg.quote === "string" ? msg.quote : undefined
+          );
+        }
+        break;
+      case "planEditComment":
+        if (typeof msg.commentId === "string" && typeof msg.body === "string") {
+          this.handlePlanEditComment(msg.commentId, msg.body);
+        }
+        break;
+      case "planDeleteComment":
+        if (typeof msg.commentId === "string") {
+          this.handlePlanDeleteComment(msg.commentId);
+        }
+        break;
+      case "planReplyComment":
+        if (
+          typeof msg.revisionId === "string" &&
+          typeof msg.parentCommentId === "string" &&
+          typeof msg.body === "string"
+        ) {
+          this.handlePlanReplyComment(
+            msg.revisionId,
+            msg.parentCommentId,
+            msg.body
+          );
+        }
+        break;
+      case "planResolveComment":
+        if (typeof msg.commentId === "string") {
+          this.handlePlanResolveComment(msg.commentId, true);
+        }
+        break;
+      case "planReopenComment":
+        if (typeof msg.commentId === "string") {
+          this.handlePlanResolveComment(msg.commentId, false);
+        }
+        break;
+      case "planOpenFileRef":
+        if (
+          typeof msg.path === "string" &&
+          typeof msg.startLine === "number" &&
+          typeof msg.endLine === "number"
+        ) {
+          await this.handlePlanOpenFileRef(msg.path, msg.startLine, msg.endLine);
+        }
+        break;
+      case "planAcceptStep":
+        if (typeof msg.revisionId === "string" && typeof msg.taskId === "string") {
+          await this.handlePlanAcceptStep(msg.revisionId, msg.taskId);
+        }
+        break;
+      case "planModifyStep":
+        if (
+          typeof msg.revisionId === "string" &&
+          typeof msg.taskId === "string" &&
+          typeof msg.instruction === "string"
+        ) {
+          await this.handlePlanModifyStep(
+            msg.revisionId,
+            msg.taskId,
+            msg.instruction
+          );
+        }
+        break;
+      case "planSkipStep":
+        if (typeof msg.revisionId === "string" && typeof msg.taskId === "string") {
+          this.handlePlanSkipStep(msg.revisionId, msg.taskId);
+        }
+        break;
+      case "planOpenInEditor":
+        if (typeof msg.revisionId === "string") {
+          this.handlePlanOpenInEditor(msg.revisionId);
+        }
+        break;
+      case "requestArtifactState":
+        // Webview-side handshake: the artifact panel mounts, asks for
+        // current state, and the host posts it back to that specific
+        // panel only. Avoids the race where the post fires before the
+        // webview's message listener is wired up.
+        if (typeof msg.revisionId === "string") {
+          this.artifacts.postToPanel(msg.revisionId, {
+            type: "loadedSession",
+            events: this.session.timeline,
+            title: ""
+          });
+        }
+        break;
+      case "planResubmit":
+        if (typeof msg.revisionId === "string") {
+          await this.handlePlanResubmit(msg.revisionId);
+        }
+        break;
+      case "planAnswer":
+        if (
+          typeof msg.questionId === "string" &&
+          typeof msg.toolUseId === "string" &&
+          Array.isArray(msg.answers)
+        ) {
+          await this.handlePlanAnswer(
+            msg.questionId,
+            msg.toolUseId,
+            msg.answers as Array<{ choice: string; note?: string }>
+          );
+        }
+        break;
+      case "planRewindTo":
+        if (typeof msg.revisionId === "string") {
+          await this.rewindTo(msg.revisionId);
+        }
+        break;
     }
+  }
+
+  /** Append a plan_comment event tied to a (revisionId, taskId). No round-trip yet. */
+  private handlePlanComment(
+    revisionId: string,
+    taskId: string,
+    body: string,
+    quote?: string
+  ) {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    this.session.emitPlanComment({
+      commentId: makeNonce().slice(0, 8),
+      revisionId,
+      taskId,
+      body: trimmed,
+      quote: quote && quote.trim() ? quote.trim() : undefined
+    });
+  }
+
+  /**
+   * Edit an existing comment in place. We mutate the timeline event's meta
+   * rather than emitting a superseding event so the rewind/truncate logic
+   * stays simple — the comment remains anchored at its original position
+   * for restore purposes.
+   */
+  private handlePlanEditComment(commentId: string, body: string) {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const ev = this.findCommentEvent(commentId);
+    if (!ev) return;
+    const meta = ev.meta as Record<string, unknown>;
+    meta.body = trimmed;
+    meta.editedAt = Date.now();
+    ev.body = trimmed;
+    this.post({ type: "timeline", event: ev });
+    this.scheduleSave();
+  }
+
+  /**
+   * Soft-delete: flag the comment as deleted but leave the event in the
+   * timeline so any rewind to a checkpoint older than this delete restores
+   * the comment intact. The webview filters deleted comments out at fold
+   * time.
+   */
+  private handlePlanDeleteComment(commentId: string) {
+    const ev = this.findCommentEvent(commentId);
+    if (!ev) return;
+    const meta = ev.meta as Record<string, unknown>;
+    meta.deleted = true;
+    this.post({ type: "timeline", event: ev });
+    this.scheduleSave();
+  }
+
+  private findCommentEvent(commentId: string) {
+    return this.session.timeline.find(
+      (e) =>
+        e.kind === "plan_comment" &&
+        (e.meta as { commentId?: string } | undefined)?.commentId === commentId
+    );
+  }
+
+  private findRevisionEvent(revisionId: string) {
+    return this.session.timeline.find(
+      (e) =>
+        e.kind === "plan_revision" &&
+        (e.meta as { revisionId?: string } | undefined)?.revisionId === revisionId
+    );
+  }
+
+  /** Append a reply: a new plan_comment whose `parentCommentId` points at `parent`. */
+  private handlePlanReplyComment(
+    revisionId: string,
+    parentCommentId: string,
+    body: string
+  ) {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const parent = this.findCommentEvent(parentCommentId);
+    const parentMeta = parent?.meta as
+      | { taskId?: string; quote?: string }
+      | undefined;
+    this.session.emitPlanComment({
+      commentId: makeNonce().slice(0, 8),
+      revisionId,
+      taskId: parentMeta?.taskId ?? "__general__",
+      body: trimmed,
+      // Inherit the parent's quote so the reply still renders in the
+      // sidebar with a "jump to passage" affordance.
+      quote: parentMeta?.quote,
+      parentCommentId
+    });
+  }
+
+  /** Toggle a comment's manual resolved state. */
+  private handlePlanResolveComment(commentId: string, resolve: boolean) {
+    const ev = this.findCommentEvent(commentId);
+    if (!ev) return;
+    const meta = ev.meta as Record<string, unknown>;
+    if (resolve) meta.resolvedAt = Date.now();
+    else delete meta.resolvedAt;
+    this.post({ type: "timeline", event: ev });
+    this.scheduleSave();
+  }
+
+  /**
+   * Reveal a workspace-relative path at the given range and select that
+   * range so the user sees the slice the plan step is talking about.
+   */
+  private async handlePlanOpenFileRef(
+    relPath: string,
+    startLine: number,
+    endLine: number
+  ) {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) {
+      this.post({ type: "error", message: "Open a workspace folder to navigate plan steps." });
+      return;
+    }
+    const target = vscode.Uri.joinPath(root, relPath);
+    try {
+      const doc = await vscode.workspace.openTextDocument(target);
+      const start = new vscode.Position(Math.max(0, startLine - 1), 0);
+      const endLineIdx = Math.max(start.line, endLine - 1);
+      const lineLen = doc.lineAt(Math.min(endLineIdx, doc.lineCount - 1)).text.length;
+      const end = new vscode.Position(endLineIdx, lineLen);
+      await vscode.window.showTextDocument(doc, {
+        selection: new vscode.Range(start, end),
+        preview: false
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.post({ type: "error", message: `Could not open ${relPath}: ${msg}` });
+    }
+  }
+
+  /**
+   * Mutate a single task's status on its plan_revision and re-post the event.
+   * Returns the updated revision event (or null if it doesn't exist) so callers
+   * can chain a follow-up agent prompt.
+   */
+  private mutateTaskStatus(
+    revisionId: string,
+    taskId: string,
+    nextStatus: "accepted" | "skipped" | "in_progress"
+  ) {
+    const ev = this.findRevisionEvent(revisionId);
+    if (!ev) return null;
+    const meta = ev.meta as { tasks?: Array<{ id: string; status: string }> } & Record<
+      string,
+      unknown
+    >;
+    const tasks = meta.tasks ?? [];
+    const idx = tasks.findIndex((t) => t.id === taskId);
+    if (idx === -1) return null;
+    tasks[idx] = { ...tasks[idx], status: nextStatus };
+    meta.tasks = tasks;
+    this.post({ type: "timeline", event: ev });
+    this.scheduleSave();
+    return { ev, task: tasks[idx] };
+  }
+
+  private async handlePlanAcceptStep(revisionId: string, taskId: string) {
+    const result = this.mutateTaskStatus(revisionId, taskId, "accepted");
+    if (!result) return;
+    const taskMeta = result.task as { content?: string };
+    const content = taskMeta.content ?? "this step";
+    await this.handlePrompt(
+      `Step approved — proceed with: "${content}".\n\n` +
+        "Execute only this step, then stop and wait for the next instruction. " +
+        "When done, emit a TodoWrite that marks this step's status as " +
+        "\"completed\" and leaves later steps untouched."
+    );
+  }
+
+  private async handlePlanModifyStep(
+    revisionId: string,
+    taskId: string,
+    instruction: string
+  ) {
+    const trimmed = instruction.trim();
+    if (!trimmed) return;
+    const ev = this.findRevisionEvent(revisionId);
+    if (!ev) return;
+    const meta = ev.meta as { tasks?: Array<{ id: string; content?: string; status: string }> };
+    const task = meta.tasks?.find((t) => t.id === taskId);
+    const content = task?.content ?? "the step";
+    await this.handlePrompt(
+      `Modify the plan step: "${content}".\n\n` +
+        `Change requested: ${trimmed}\n\n` +
+        "Preserve every step that is already marked accepted or completed. " +
+        "Regenerate downstream steps as needed and emit a fresh ExitPlanMode " +
+        "(plus TodoWrite) reflecting the updated plan."
+    );
+  }
+
+  private handlePlanSkipStep(revisionId: string, taskId: string) {
+    this.mutateTaskStatus(revisionId, taskId, "skipped");
+  }
+
+  /**
+   * Reveal the plan as a real editor tab. The artifact webview shares the
+   * same compiled bundle as the chat panel; it loads `ArtifactApp` instead
+   * of the chat shell because the host injects window globals that the
+   * webview entry reads at boot.
+   */
+  private handlePlanOpenInEditor(revisionId: string) {
+    const ev = this.findRevisionEvent(revisionId);
+    if (!ev) {
+      this.post({ type: "error", message: "That plan revision is no longer available." });
+      return;
+    }
+    const meta = ev.meta as unknown as PlanRevisionMeta;
+    this.artifacts.open(meta);
+  }
+
+  /**
+   * Bundle all unresolved plan_comment events for `revisionId` into a single
+   * structured user turn and feed it back through the regular handlePrompt
+   * pipeline. The orchestrator's PlanInterceptor will turn the response into
+   * a fresh plan_revision with parentRevisionId pointing at the old one.
+   */
+  private async handlePlanResubmit(revisionId: string) {
+    const comments = this.session.timeline.filter(
+      (e) =>
+        e.kind === "plan_comment" &&
+        (e.meta as { revisionId?: string } | undefined)?.revisionId === revisionId &&
+        !(e.meta as { resolvedInRevisionId?: string } | undefined)?.resolvedInRevisionId
+    );
+    if (comments.length === 0) return;
+
+    const tasksById = new Map<string, string>();
+    const revEvent = this.session.timeline.find(
+      (e) => e.kind === "plan_revision" && (e.meta as { revisionId?: string })?.revisionId === revisionId
+    );
+    const tasks = (revEvent?.meta as { tasks?: Array<{ id: string; content: string }> } | undefined)?.tasks ?? [];
+    for (const t of tasks) tasksById.set(t.id, t.content);
+
+    interface CommentEntry { body: string; quote?: string }
+    const grouped = new Map<string, CommentEntry[]>();
+    for (const c of comments) {
+      const meta = c.meta as { taskId: string; body: string; quote?: string };
+      const list = grouped.get(meta.taskId) ?? [];
+      list.push({ body: meta.body, quote: meta.quote });
+      grouped.set(meta.taskId, list);
+    }
+
+    const lines = ["The plan needs revision based on this feedback:", ""];
+    for (const [taskId, entries] of grouped) {
+      const label =
+        taskId === "__general__"
+          ? "Whole-plan feedback"
+          : taskId === "__inline__"
+            ? "Inline feedback"
+            : (tasksById.get(taskId) ?? `(task ${taskId})`);
+      lines.push(`**${label}**`);
+      for (const e of entries) {
+        if (e.quote) {
+          // Truncate long quotes — the agent doesn't need the whole passage,
+          // just enough to relocate what the user was reacting to.
+          const snippet = e.quote.length > 240 ? `${e.quote.slice(0, 237)}…` : e.quote;
+          lines.push(`- (re: "${snippet.replace(/\s+/g, " ").trim()}") ${e.body}`);
+        } else {
+          lines.push(`- ${e.body}`);
+        }
+      }
+      lines.push("");
+    }
+    lines.push("Produce an updated plan via ExitPlanMode that addresses each comment.");
+    await this.handlePrompt(lines.join("\n"));
+  }
+
+  /**
+   * Record the user's question-card answers in the timeline, then forward
+   * them as a synthetic user turn so the model knows how to proceed.
+   */
+  private async handlePlanAnswer(
+    questionId: string,
+    _toolUseId: string,
+    answers: Array<{ choice: string; note?: string }>
+  ) {
+    this.session.emitPlanAnswer({ questionId, answers });
+    const summary = answers
+      .map((a, i) => `Q${i + 1}: ${a.choice}${a.note ? ` (${a.note})` : ""}`)
+      .join("; ");
+    await this.handlePrompt(`Answer to your question — ${summary}`);
   }
 
   private async broadcastHistory() {
@@ -435,16 +916,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     this.session.timeline = stored.timeline;
     this.session.title = stored.title;
 
-    this.session.onEvent((e) => {
-      this.post({ type: "timeline", event: e });
-      this.trackFileForCheckpoint(e);
-      this.scheduleSave();
-    });
-    this.session.onUserTurn(async (eventId) => {
-      if (this.checkpoints) {
-        await this.checkpoints.captureBefore(eventId);
-      }
-    });
+    this.attachSessionListeners();
 
     this.post({ type: "loadedSession", events: stored.timeline, title: stored.title });
   }
@@ -751,6 +1223,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   private post(msg: unknown) {
     this.view?.webview.postMessage(msg);
+    // Mirror to any open artifact editor tabs so they stay in sync with the
+    // chat — comment edits, step accepts, plan revisions, etc. all need to
+    // appear on both surfaces.
+    this.artifacts.broadcast(msg);
   }
 
   private html(webview: vscode.Webview): string {

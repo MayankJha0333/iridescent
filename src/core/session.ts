@@ -1,4 +1,12 @@
-import { ContentBlock, Message, TimelineEvent } from "./types.js";
+import {
+  ContentBlock,
+  Message,
+  PlanAnswerMeta,
+  PlanCommentMeta,
+  PlanQuestionMeta,
+  PlanRevisionMeta,
+  TimelineEvent
+} from "./types.js";
 import { randomUUID } from "node:crypto";
 
 export type SessionListener = (e: TimelineEvent) => void;
@@ -65,6 +73,46 @@ export class Session {
       title: isError ? "Tool Error" : "Tool Result",
       body: content,
       meta: { id: toolUseId }
+    });
+  }
+
+  emitPlanRevision(meta: PlanRevisionMeta): TimelineEvent {
+    return this.emit({
+      kind: "plan_revision",
+      title: meta.bodyChanged ? `Plan ${meta.revisionId}` : `Plan ${meta.revisionId} · tasks updated`,
+      body: meta.body,
+      meta: meta as unknown as Record<string, unknown>
+    });
+  }
+
+  emitPlanQuestion(meta: PlanQuestionMeta): TimelineEvent {
+    const head = meta.questions[0];
+    return this.emit({
+      kind: "plan_question",
+      title: head?.header ?? "Question",
+      body: head?.question ?? "",
+      meta: meta as unknown as Record<string, unknown>
+    });
+  }
+
+  emitPlanComment(meta: PlanCommentMeta): TimelineEvent {
+    return this.emit({
+      kind: "plan_comment",
+      title: "Plan comment",
+      body: meta.body,
+      meta: meta as unknown as Record<string, unknown>
+    });
+  }
+
+  emitPlanAnswer(meta: PlanAnswerMeta): TimelineEvent {
+    const summary = meta.answers
+      .map((a) => a.choice + (a.note ? ` — ${a.note}` : ""))
+      .join(" · ");
+    return this.emit({
+      kind: "plan_answer",
+      title: "Plan answer",
+      body: summary,
+      meta: meta as unknown as Record<string, unknown>
     });
   }
 

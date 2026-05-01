@@ -33,7 +33,10 @@ export function activate(ctx: vscode.ExtensionContext) {
       await cfg.update("permissionMode", next, vscode.ConfigurationTarget.Global);
       vscode.window.setStatusBarMessage(`Iridescent mode: ${next}`, 2000);
     }),
-    vscode.commands.registerCommand("iridescent.sendSelection", () => panel.sendSelectionToChat())
+    vscode.commands.registerCommand("iridescent.sendSelection", () => panel.sendSelectionToChat()),
+    vscode.commands.registerCommand("iridescent.commentOnSelection", () =>
+      panel.commentOnEditorSelection()
+    )
   );
 }
 

@@ -20,10 +20,91 @@ export type PermissionMode = "default" | "auto" | "plan";
 export interface TimelineEvent {
   id: string;
   ts: number;
-  kind: "user" | "assistant" | "tool_call" | "tool_result" | string;
+  kind:
+    | "user"
+    | "assistant"
+    | "tool_call"
+    | "tool_result"
+    | "plan_revision"
+    | "plan_question"
+    | "plan_comment"
+    | "plan_answer"
+    | string;
   title: string;
   body?: string;
-  meta?: { id?: string };
+  meta?: Record<string, unknown>;
+}
+
+// ── Plan-mode payloads (mirror src/core/types.ts) ─────────────
+
+export interface PlanTaskFileRef {
+  path: string;
+  startLine: number;
+  endLine: number;
+  label?: string;
+}
+
+export type PlanTaskStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "skipped"
+  | "accepted";
+
+export interface PlanTask {
+  id: string;
+  content: string;
+  activeForm: string;
+  status: PlanTaskStatus;
+  fileRefs?: PlanTaskFileRef[];
+  blocked?: boolean;
+}
+
+export interface PlanRevisionMeta {
+  revisionId: string;
+  parentRevisionId?: string;
+  toolUseId?: string;
+  body: string;
+  tasks: PlanTask[];
+  bodyChanged: boolean;
+  planFilePath?: string;
+}
+
+export interface PlanQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface PlanQuestionEntry {
+  question: string;
+  header?: string;
+  options: PlanQuestionOption[];
+  multiSelect?: boolean;
+}
+
+export interface PlanQuestionMeta {
+  questionId: string;
+  toolUseId: string;
+  revisionId?: string;
+  questions: PlanQuestionEntry[];
+}
+
+export interface PlanCommentMeta {
+  commentId: string;
+  revisionId: string;
+  taskId: string;
+  body: string;
+  quote?: string;
+  resolvedInRevisionId?: string;
+  deleted?: boolean;
+  editedAt?: number;
+  parentCommentId?: string;
+  resolvedAt?: number;
+}
+
+export interface PlanAnswerMeta {
+  questionId: string;
+  answers: Array<{ choice: string; note?: string }>;
 }
 
 export type Delta =
@@ -138,7 +219,48 @@ export type Outbound =
       type: "uninstallMarketplaceSkill";
       name: string;
       scope: "user" | "project";
-    };
+    }
+  | {
+      type: "planComment";
+      revisionId: string;
+      taskId: string;
+      body: string;
+      quote?: string;
+    }
+  | { type: "planEditComment"; commentId: string; body: string }
+  | { type: "planDeleteComment"; commentId: string }
+  | {
+      type: "planReplyComment";
+      revisionId: string;
+      parentCommentId: string;
+      body: string;
+    }
+  | { type: "planResolveComment"; commentId: string }
+  | { type: "planReopenComment"; commentId: string }
+  | {
+      type: "planOpenFileRef";
+      path: string;
+      startLine: number;
+      endLine: number;
+    }
+  | { type: "planAcceptStep"; revisionId: string; taskId: string }
+  | {
+      type: "planModifyStep";
+      revisionId: string;
+      taskId: string;
+      instruction: string;
+    }
+  | { type: "planSkipStep"; revisionId: string; taskId: string }
+  | { type: "planOpenInEditor"; revisionId: string }
+  | { type: "requestArtifactState"; revisionId: string }
+  | { type: "planResubmit"; revisionId: string }
+  | {
+      type: "planAnswer";
+      questionId: string;
+      toolUseId: string;
+      answers: Array<{ choice: string; note?: string }>;
+    }
+  | { type: "planRewindTo"; revisionId: string };
 
 // ── Inbound (extension → webview) ─────────────────────────────
 

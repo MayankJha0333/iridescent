@@ -23,6 +23,8 @@ import { HistoryDrawer } from "./HistoryDrawer";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
+import { PlanCard, foldPlanState, looksLikePlanFile } from "../plan";
+import type { PlanRevisionView } from "../plan";
 
 export interface ChatScreenProps {
   authMode: AuthMode | null;
@@ -75,6 +77,10 @@ export function ChatScreen({
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const grouped = useMemo(() => groupEvents(events), [events]);
+  const planContext = useMemo(
+    () => ({ views: grouped.views, ordered: grouped.ordered }),
+    [grouped]
+  );
 
   useEffect(() => {
     if (userScrolled.current) return;
@@ -100,9 +106,9 @@ export function ChatScreen({
       />
 
       <div className="log" ref={logRef} onScroll={onScroll}>
-        {grouped.length === 0 && !streaming && <EmptyState />}
-        {grouped.map((g, i) =>
-          renderGroup(g, i, grouped, (turnId, messagesAfter) =>
+        {grouped.groups.length === 0 && !streaming && <EmptyState />}
+        {grouped.groups.map((g, i) =>
+          renderGroup(g, i, grouped.groups, planContext, (turnId, messagesAfter) =>
             setPendingRewind({ turnId, messagesAfter })
           )
         )}
@@ -176,11 +182,50 @@ export function ChatScreen({
 type Group =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string }
-  | { kind: "tool"; id: string; name: string; input: string; result?: string; isError?: boolean };
+  | { kind: "tool"; id: string; name: string; input: string; result?: string; isError?: boolean }
+  | { kind: "plan"; id: string; revisionId: string };
 
-function groupEvents(events: TimelineEvent[]): Group[] {
+/**
+ * Tool names whose tool_use blocks are rendered via PlanCard rather than
+ * ToolCard. Filter applies even on historic sessions saved before plan
+ * interception was wired (defensive — orchestrator already suppresses live).
+ */
+const PLAN_TOOL_NAMES = new Set(["ExitPlanMode", "TodoWrite", "AskUserQuestion"]);
+const WRITE_TOOL_NAMES = new Set([
+  "Write",
+  "Create",
+  "Edit",
+  "MultiEdit",
+  "fs_write",
+  "str_replace_editor"
+]);
+
+function isPlanFileWriteEvent(name: string, body: string | undefined): boolean {
+  if (!WRITE_TOOL_NAMES.has(name)) return false;
+  try {
+    const input = JSON.parse(body ?? "{}") as Record<string, unknown>;
+    const path = String(input.path ?? input.file_path ?? input.filePath ?? "");
+    return looksLikePlanFile(path);
+  } catch {
+    return false;
+  }
+}
+
+interface GroupingResult {
+  groups: Group[];
+  views: Map<string, PlanRevisionView>;
+  ordered: PlanRevisionView[];
+}
+
+function groupEvents(events: TimelineEvent[]): GroupingResult {
   const groups: Group[] = [];
   const toolById = new Map<string, Extract<Group, { kind: "tool" }>>();
+  const ordered = foldPlanState(events);
+  const views = new Map<string, PlanRevisionView>();
+  for (const v of ordered) views.set(v.meta.revisionId, v);
+  /** Tool-use ids whose tool_call we suppressed (plan-file writes). Their
+   * tool_result events should be hidden too. */
+  const suppressedToolUseIds = new Set<string>();
 
   for (const e of events) {
     if (e.kind === "user") {
@@ -194,6 +239,25 @@ function groupEvents(events: TimelineEvent[]): Group[] {
       }
     } else if (e.kind === "tool_call") {
       const name = e.title.replace(/^Tool:\s*/, "");
+      if (PLAN_TOOL_NAMES.has(name)) continue;
+      // Back-fill: a Write to a plan file in a session saved before the
+      // backend interceptor existed shows up as a synthetic plan view
+      // keyed `synth-<eventId>`. Render it as a PlanCard in place.
+      const synthId = `synth-${e.id}`;
+      if (views.has(synthId)) {
+        const tid = (e.meta as { id?: string } | undefined)?.id;
+        if (tid) suppressedToolUseIds.add(tid);
+        groups.push({ kind: "plan", id: e.id, revisionId: synthId });
+        continue;
+      }
+      // Defensive: even without a synthetic view, hide a Write to a plan
+      // file when we can detect the path — we'll have a real plan_revision
+      // event for it elsewhere (live-streaming case).
+      if (isPlanFileWriteEvent(name, e.body)) {
+        const tid = (e.meta as { id?: string } | undefined)?.id;
+        if (tid) suppressedToolUseIds.add(tid);
+        continue;
+      }
       const g: Extract<Group, { kind: "tool" }> = {
         kind: "tool",
         id: e.id,
@@ -201,15 +265,16 @@ function groupEvents(events: TimelineEvent[]): Group[] {
         input: e.body ?? "{}"
       };
       groups.push(g);
-      const tid = e.meta?.id;
+      const tid = (e.meta as { id?: string } | undefined)?.id;
       if (tid) toolById.set(tid, g);
     } else if (e.kind === "tool_result") {
-      const tid = e.meta?.id;
+      const tid = (e.meta as { id?: string } | undefined)?.id;
+      if (tid && suppressedToolUseIds.has(tid)) continue;
       const target = tid ? toolById.get(tid) : undefined;
       if (target) {
         target.result = e.body ?? "";
         target.isError = e.title === "Tool Error";
-      } else {
+      } else if (!tid || !PLAN_TOOL_NAMES.has(target?.name ?? "")) {
         groups.push({
           kind: "tool",
           id: e.id,
@@ -219,15 +284,23 @@ function groupEvents(events: TimelineEvent[]): Group[] {
           isError: e.title === "Tool Error"
         });
       }
+    } else if (e.kind === "plan_revision") {
+      const meta = e.meta as { revisionId?: string } | undefined;
+      if (meta?.revisionId) {
+        groups.push({ kind: "plan", id: e.id, revisionId: meta.revisionId });
+      }
     }
+    // plan_question / plan_comment / plan_answer events do not produce
+    // their own groups — they are folded into the PlanRevisionView.
   }
-  return groups;
+  return { groups, views, ordered };
 }
 
 function renderGroup(
   g: Group,
   idx: number,
   all: Group[],
+  ctx: { views: Map<string, PlanRevisionView>; ordered: PlanRevisionView[] },
   onRewindRequest: (turnId: string, messagesAfter: number) => void
 ) {
   if (g.kind === "user") {
@@ -256,6 +329,22 @@ function renderGroup(
       }
     }
     return <AssistantMessage key={g.id} text={g.text} showAvatar={showAvatar} />;
+  }
+  if (g.kind === "plan") {
+    const view = ctx.views.get(g.revisionId);
+    if (!view) return null;
+    const ordinal = ctx.ordered.indexOf(view) + 1;
+    const previous = ordinal > 1 ? ctx.ordered[ordinal - 2] : undefined;
+    const isLatest = ordinal === ctx.ordered.length;
+    return (
+      <PlanCard
+        key={g.id}
+        view={view}
+        previous={previous}
+        isLatest={isLatest}
+        ordinal={ordinal}
+      />
+    );
   }
   return (
     <ToolCard

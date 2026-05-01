@@ -41,6 +41,15 @@ export class CheckpointService {
     this.gc();
   }
 
+  /**
+   * Snapshot keyed on a plan revision event id so each revision becomes
+   * its own restore point. Same body as captureBefore — separate name to
+   * make call sites self-documenting.
+   */
+  async captureBeforePlanRevision(revisionEventId: string): Promise<void> {
+    await this.captureBefore(revisionEventId);
+  }
+
   async restore(turnId: string): Promise<{ restored: number; deleted: number }> {
     const cp = this.checkpoints.get(turnId);
     if (!cp) return { restored: 0, deleted: 0 };

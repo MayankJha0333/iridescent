@@ -2,6 +2,7 @@ import { ContentBlock, StreamDelta, ToolHandler, ToolContext, ToolDefinition } f
 import { Session } from "./session.js";
 import { Approver, PermissionGate, check, isDestructiveBash, isProtectedPath } from "./permissions.js";
 import { ChatProvider, ProviderRequest } from "../providers/base.js";
+import { PlanInterceptor } from "./plan-intercept.js";
 
 export interface OrchestratorOpts {
   provider: ChatProvider;
@@ -58,6 +59,7 @@ export class Orchestrator {
     const blocks: ContentBlock[] = [];
     let currentTool: { id: string; name: string; inputBuf: string } | null = null;
     const seenAssistantBlockIds = new Set<string>();
+    const planIntercept = new PlanInterceptor(this.session);
     let textBuf = "";
 
     const flushText = () => {
@@ -95,7 +97,10 @@ export class Orchestrator {
               name: currentTool.name,
               input
             });
-            if (!seenAssistantBlockIds.has(currentTool.id)) {
+            // Plan-mode tools (ExitPlanMode / TodoWrite / AskUserQuestion)
+            // become structured plan_* events instead of generic tool_calls.
+            const intercepted = planIntercept.consume(currentTool.name, currentTool.id, input);
+            if (!intercepted && !seenAssistantBlockIds.has(currentTool.id)) {
               seenAssistantBlockIds.add(currentTool.id);
               this.session.emitToolCall(currentTool.id, currentTool.name, input);
             }
@@ -104,6 +109,9 @@ export class Orchestrator {
           break;
         case "tool_result":
           if (delta.toolUseId) {
+            // Suppress synthetic tool_result rendering for intercepted plan
+            // events — the PlanCard already conveys approval / answer state.
+            if (planIntercept.interceptedToolIds.has(delta.toolUseId)) break;
             this.session.addToolResult(
               delta.toolUseId,
               delta.resultContent ?? "",
@@ -119,6 +127,7 @@ export class Orchestrator {
     }
 
     flushText();
+    planIntercept.flush();
 
     // Persist the full block sequence into messages history (used as
     // context for any follow-up turn the user sends).

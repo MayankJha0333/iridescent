@@ -46,8 +46,15 @@ function timelineReducer(state: TimelineEvent[], action: TimelineAction): Timeli
   switch (action.type) {
     case "reset":
       return [];
-    case "append":
-      return state.some((e) => e.id === action.event.id) ? state : [...state, action.event];
+    case "append": {
+      const idx = state.findIndex((e) => e.id === action.event.id);
+      if (idx === -1) return [...state, action.event];
+      // Replace in place when the host re-posts an existing event (e.g. a
+      // plan-comment edit mutates meta and re-emits the same id).
+      const next = state.slice();
+      next[idx] = action.event;
+      return next;
+    }
     case "replace":
       return action.events;
   }
