@@ -42,6 +42,19 @@ export interface ToolContext {
 
 export type PermissionMode = "default" | "plan" | "auto";
 
+export type TaskType =
+  | "backend"
+  | "frontend"
+  | "fullstack"
+  | "devops"
+  | "integration"
+  | "docs-driven"
+  | "refactor"
+  | "bugfix"
+  | "migration"
+  | "new-impl"
+  | "generic";
+
 export interface StreamDelta {
   type:
     | "text"
@@ -119,7 +132,29 @@ export interface PlanRevisionMeta {
   bodyChanged: boolean;
   /** Path of the plan markdown file (e.g. ~/.claude/plans/foo.md) the CLI wrote, when the plan body came from a file rather than ExitPlanMode.input.plan. */
   planFilePath?: string;
+  /** Parsed H2 sections from the plan body. Drives the completeness badge in
+   *  PlanCard. Each value is the section's body text (may be empty if the
+   *  heading exists with no content). Undefined means parsing wasn't run
+   *  (e.g. plan from before this feature shipped). */
+  sections?: PlanSections;
 }
+
+/** Required sections in plan-mode.md, in the order the prompt mandates. */
+export interface PlanSections {
+  context?: string;
+  approach?: string;
+  conventions?: string;
+  risks?: string;
+  verification?: string;
+}
+
+export const REQUIRED_PLAN_SECTIONS: ReadonlyArray<keyof PlanSections> = [
+  "context",
+  "approach",
+  "conventions",
+  "risks",
+  "verification"
+] as const;
 
 export interface PlanQuestionOption {
   label: string;

@@ -21,6 +21,13 @@ import { PlanDecorationService } from "../services/plan-decorations.js";
 import { PlanArtifactManager } from "./plan-artifact-panel.js";
 import { discoverClaudeSkills } from "../services/claude-skills.js";
 import {
+  loadConventions,
+  disposeConventionsWatchers,
+  ConventionsFile
+} from "../services/conventions.js";
+import { classifyTask } from "../core/task-classifier.js";
+import { getSkillSuggestion } from "../services/skill-suggestions.js";
+import {
   fetchMarketplace,
   installSkill as installMarketplaceSkill,
   uninstallSkill as uninstallMarketplaceSkill,
@@ -55,6 +62,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       dispose: () => {
         this.decorations.dispose();
         this.artifacts.closeAll();
+        disposeConventionsWatchers();
       }
     });
     this.initSession();
@@ -268,6 +276,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
 
   newSession() {
+    this.artifacts.closeAll();
     this.initSession();
     this.resumeId = undefined;
     this.checkpoints?.clear();
@@ -597,6 +606,95 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           await this.rewindTo(msg.revisionId);
         }
         break;
+      case "planProceedRequest":
+        if (typeof msg.revisionId === "string") {
+          await this.handlePlanProceed(msg.revisionId);
+        }
+        break;
+      case "dismissConventionsBanner":
+        await this.ctx.workspaceState.update(
+          "iridescent.conventionsBannerDismissed.v1",
+          true
+        );
+        break;
+      case "openConventionsFile":
+        if (typeof msg.path === "string") {
+          await vscode.window.showTextDocument(vscode.Uri.file(msg.path));
+        }
+        break;
+      case "generateConventions":
+        await vscode.commands.executeCommand("iridescent.generateConventions");
+        break;
+      case "dismissSkillSuggestion":
+        if (typeof msg.skillId === "string") {
+          const list = this.ctx.workspaceState.get<string[]>(
+            "iridescent.skillSuggestionDismissed.v1",
+            []
+          );
+          if (!list.includes(msg.skillId)) {
+            await this.ctx.workspaceState.update(
+              "iridescent.skillSuggestionDismissed.v1",
+              [...list, msg.skillId]
+            );
+          }
+        }
+        break;
+    }
+  }
+
+  /** Tell the webview which conventions file is loaded so the status pill can
+   *  render. Posts even when null so the pill can clear. */
+  private broadcastConventionsStatus(c: ConventionsFile | null): void {
+    this.post({
+      type: "conventionsStatus",
+      source: c?.source ?? null,
+      path: c?.absolutePath ?? null,
+      relativePath: c?.workspaceRelativePath ?? null,
+      hasAlternative: c?.hasAlternative ?? false
+    });
+  }
+
+  /** Plan mode only: if the classifier picked a task type with a known
+   *  marketplace skill recommendation and that skill isn't installed, post a
+   *  one-line suggestion to the webview. Reuses the existing
+   *  `installMarketplaceSkill` flow when the user clicks Install. */
+  private async maybeSuggestSkill(
+    taskType: import("../core/types.js").TaskType,
+    workspaceRoot: string
+  ): Promise<void> {
+    const dismissed = this.ctx.workspaceState.get<string[]>(
+      "iridescent.skillSuggestionDismissed.v1",
+      []
+    );
+    const suggestion = await getSkillSuggestion(taskType, workspaceRoot);
+    if (!suggestion) return;
+    if (dismissed.includes(suggestion.skillId)) return;
+    this.post({
+      type: "skillSuggestion",
+      skillId: suggestion.skillId,
+      skillName: suggestion.skillName,
+      reason: suggestion.reason,
+      taskType: suggestion.taskType
+    });
+  }
+
+  /** After 3+ turns in a workspace with no conventions file, show a one-time
+   *  banner suggesting the user generate one. Dismissal is workspace-scoped. */
+  private maybeShowConventionsBanner(c: ConventionsFile | null): void {
+    if (c) return;
+    const dismissed = this.ctx.workspaceState.get<boolean>(
+      "iridescent.conventionsBannerDismissed.v1",
+      false
+    );
+    if (dismissed) return;
+    const turnCount = this.ctx.workspaceState.get<number>(
+      "iridescent.turnCount.v1",
+      0
+    );
+    const next = turnCount + 1;
+    this.ctx.workspaceState.update("iridescent.turnCount.v1", next);
+    if (next >= 3) {
+      this.post({ type: "conventionsBanner" });
     }
   }
 
@@ -760,6 +858,56 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     return { ev, task: tasks[idx] };
   }
 
+  /**
+   * Plan "Proceed" pressed. Show a permission popup, switch out of plan mode
+   * if needed, then send the continuation prompt — all in one step so the
+   * agent can start writing without the user having to manually flip mode.
+   */
+  private async handlePlanProceed(revisionId: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("iridescent");
+    const currentMode = cfg.get<PermissionMode>("permissionMode", "default");
+
+    const choice = await vscode.window.showInformationMessage(
+      "Iridescent has a plan ready. Allow it to start implementing?",
+      {
+        modal: true,
+        detail:
+          currentMode === "plan"
+            ? "Plan mode blocks edits. Approving switches to default mode (each edit still asks for approval) so the agent can carry out the plan."
+            : "The agent will continue with file edits and any necessary commands."
+      },
+      "Allow & continue",
+      "Allow auto (no prompts)"
+    );
+
+    if (!choice) return; // user cancelled / closed modal
+
+    const wantAuto = choice === "Allow auto (no prompts)";
+    const targetMode: PermissionMode = wantAuto
+      ? "auto"
+      : currentMode === "plan"
+      ? "default"
+      : currentMode;
+
+    if (targetMode !== currentMode) {
+      await cfg.update(
+        "permissionMode",
+        targetMode,
+        vscode.ConfigurationTarget.Global
+      );
+      // Mirror the change back to the webview so the mode pill updates
+      // before the next turn begins.
+      await this.broadcastAuthState();
+    }
+
+    // Continue the same conversation. The model sees this as the next
+    // user turn but the UX flow (popup → continuation) makes it feel like
+    // a single click rather than two separate user actions.
+    void this.handlePrompt(
+      "Plan approved. Proceed with the implementation now. Carry out each step in order, stopping only if you hit a blocker that requires user input."
+    );
+  }
+
   private async handlePlanAcceptStep(revisionId: string, taskId: string) {
     const result = this.mutateTaskStatus(revisionId, taskId, "accepted");
     if (!result) return;
@@ -900,6 +1048,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     // Replace the in-memory session with the stored one. We don't construct a
     // brand-new Session() because we need the id/createdAt to match for
     // subsequent saves to overwrite the same file.
+    this.artifacts.closeAll();
     this.orchestrator?.cancel();
     this.orchestrator = undefined;
     this.checkpoints?.clear();
@@ -1136,6 +1285,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     this.ensureCheckpoints(workspaceRoot);
 
+    // Per-turn prompt context: classify the task and discover project
+    // conventions so both providers see the same grounding info. Conventions
+    // are cached per-workspace and invalidated by file watcher.
+    const activeFile = vscode.window.activeTextEditor
+      ? vscode.workspace.asRelativePath(vscode.window.activeTextEditor.document.uri)
+      : undefined;
+    const taskType = classifyTask(text, activeFile);
+    const conventions = await loadConventions(workspaceRoot);
+    this.broadcastConventionsStatus(conventions);
+
     let providerInstance;
     let externalToolExecution = false;
     try {
@@ -1146,6 +1305,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           permissionMode: permMode,
           allowedBashPatterns: bashAllowlist,
           disabledSkills,
+          taskType,
+          conventions,
           getResumeSessionId: () => this.resumeId,
           setResumeSessionId: (id) => {
             this.resumeId = id;
@@ -1172,17 +1333,27 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     const gate = createGate(permMode, bashAllowlist);
     const tools = defaultTools();
+    const isClaudeCli = mode === "subscription";
 
     // Per-turn prompt — pulls in the current workspace root and active editor
     // so the agent knows it's sitting *inside* the user's project rather
-    // than treating the conversation as a generic chat.
+    // than treating the conversation as a generic chat. The api-key path
+    // composes everything (mode + task-type + conventions) into one string;
+    // the CLI path appends them as separate --append-system-prompt flags.
     const systemPrompt = buildSystemPrompt({
       workspaceRoot,
-      activeFile: vscode.window.activeTextEditor
-        ? vscode.workspace.asRelativePath(vscode.window.activeTextEditor.document.uri)
-        : undefined,
-      workspaceName: vscode.workspace.workspaceFolders?.[0]?.name
+      activeFile,
+      workspaceName: vscode.workspace.workspaceFolders?.[0]?.name,
+      permissionMode: permMode,
+      taskType,
+      conventions,
+      isClaudeCli
     });
+
+    this.maybeShowConventionsBanner(conventions);
+    if (permMode === "plan") {
+      void this.maybeSuggestSkill(taskType, workspaceRoot);
+    }
 
     this.orchestrator = new Orchestrator(this.session, {
       provider: providerInstance,

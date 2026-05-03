@@ -12,7 +12,10 @@ const options = {
   external: ["vscode"],
   sourcemap: true,
   minify: !watch,
-  logLevel: "info"
+  logLevel: "info",
+  loader: {
+    ".md": "text"
+  }
 };
 
 if (watch) {

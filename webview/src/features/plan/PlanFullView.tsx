@@ -140,10 +140,7 @@ export function PlanFullView({ view, previous, isLatest, ordinal, onCollapse }: 
   };
 
   const proceed = () => {
-    send({
-      type: "prompt",
-      text: "Plan approved — proceed with the implementation."
-    });
+    send({ type: "planProceedRequest", revisionId: view.meta.revisionId });
     onCollapse();
   };
 

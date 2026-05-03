@@ -19,7 +19,8 @@ import type {
   TimelineEvent
 } from "./types";
 
-/** Tool names whose tool_call events we sniff for plan-file writes. */
+/** Tool names whose tool_call events we sniff for plan-file writes.
+ *  Permissive — also accepts any name containing write/edit/create/save. */
 const WRITE_TOOL_NAMES = new Set([
   "Write",
   "Create",
@@ -28,12 +29,24 @@ const WRITE_TOOL_NAMES = new Set([
   "fs_write",
   "str_replace_editor"
 ]);
+const WRITE_TOOL_NAME_RE_PREFIX = /^(write|edit|create|save|update|put|insert)(?:$|[_-]|[A-Z])/i;
+const WRITE_TOOL_NAME_RE_BOUNDARY = /[_-](write|edit|create|save|update|put|insert)(?:$|[_-]|[A-Z])/i;
+function isWriteToolName(name: string): boolean {
+  return (
+    WRITE_TOOL_NAMES.has(name) ||
+    WRITE_TOOL_NAME_RE_PREFIX.test(name) ||
+    WRITE_TOOL_NAME_RE_BOUNDARY.test(name)
+  );
+}
 
-/** True if `path` looks like the CLI's plan-mode markdown file. */
+/** True if `path` looks like a plan-mode markdown file. Permissive on
+ *  directory layout — any `*.md` under a `plans/` segment counts. Catches
+ *  legacy `~/.claude/plans/` plus newer `~/.claude/projects/<X>/plans/`
+ *  and workspace-local `<root>/plans/` shapes. */
 export function looksLikePlanFile(p: string): boolean {
   if (!p) return false;
   if (!/\.(md|markdown)$/i.test(p)) return false;
-  return /(^|\/)\.claude\/plans\//.test(p) || /(^|\/)plans\//.test(p);
+  return /(?:^|\/)plans\//i.test(p);
 }
 
 /**
@@ -48,13 +61,26 @@ function synthesizeFromWrite(e: TimelineEvent, parent?: PlanRevisionMeta): PlanR
   } catch {
     return null;
   }
-  const path = String(input.path ?? input.file_path ?? input.filePath ?? "");
+  const path = String(
+    input.path ??
+      input.file_path ??
+      input.filePath ??
+      input.target_file ??
+      input.target ??
+      input.destination ??
+      input.uri ??
+      ""
+  );
   if (!looksLikePlanFile(path)) return null;
   const content =
     (typeof input.content === "string" && input.content) ||
     (typeof input.file_text === "string" && input.file_text) ||
     (typeof input.text === "string" && input.text) ||
     (typeof input.new_str === "string" && input.new_str) ||
+    (typeof input.body === "string" && input.body) ||
+    (typeof input.markdown === "string" && input.markdown) ||
+    (typeof input.data === "string" && input.data) ||
+    (typeof input.value === "string" && input.value) ||
     "";
   if (!content) return null;
   const revisionId = `synth-${e.id}`;
@@ -113,7 +139,7 @@ export function foldPlanState(events: TimelineEvent[]): PlanRevisionView[] {
       // writes. If we see one and it isn't already covered by a live
       // revision, synthesize a virtual view in its position.
       const name = e.title.replace(/^Tool:\s*/, "");
-      if (!WRITE_TOOL_NAMES.has(name)) continue;
+      if (!isWriteToolName(name)) continue;
       const toolUseId = (e.meta as { id?: string } | undefined)?.id;
       if (toolUseId && liveCoveredToolUseIds.has(toolUseId)) continue;
       const view = synthesizeFromWrite(e, lastView(revisions)?.meta);

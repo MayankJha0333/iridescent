@@ -38,7 +38,8 @@
       { "command": "iridescent.cycleMode",     "title": "Iridescent: Cycle Permission Mode" },
       { "command": "iridescent.setApiKey",     "title": "Iridescent: Set API Key" },
       { "command": "iridescent.sendSelection", "title": "Iridescent: Send Selection to Chat" },
-      { "command": "iridescent.commentOnSelection", "title": "Iridescent: Comment on Selection" }
+      { "command": "iridescent.commentOnSelection", "title": "Iridescent: Comment on Selection" },
+      { "command": "iridescent.generateConventions", "title": "Iridescent: Generate CLAUDE.md" }
     ],
     "keybindings": [
       { "command": "iridescent.toggleChat",    "key": "ctrl+shift+i", "mac": "cmd+shift+i" },

@@ -14,7 +14,12 @@
 import { useMemo } from "react";
 import { Icon } from "../../design/icons";
 import { Chip } from "../../design/primitives";
-import { send } from "../../lib/rpc";
+import {
+  send,
+  REQUIRED_PLAN_SECTIONS,
+  PLAN_SECTION_LABELS,
+  PlanSections
+} from "../../lib/rpc";
 import { unresolvedComments } from "./foldPlanState";
 import { extractPlanSummary } from "./summary";
 import type { PlanRevisionView } from "./types";
@@ -35,12 +40,17 @@ export function PlanCard({ view, isLatest, ordinal }: Props) {
   const branched = !!view.meta.parentRevisionId;
   const taskCount = view.meta.tasks.length;
   const completed = view.meta.tasks.filter((t) => t.status === "completed").length;
+  const sectionStatus = useMemo(
+    () => evaluateSections(view.meta.sections),
+    [view.meta.sections]
+  );
 
   const proceed = () => {
-    send({
-      type: "prompt",
-      text: "Plan approved — proceed with the implementation."
-    });
+    // Don't send a chat prompt directly — that would inject a "Plan approved"
+    // user bubble while leaving the agent stuck in plan mode (which can't
+    // write). The extension shows a permission popup, switches mode, and
+    // continues the same conversation in one motion.
+    send({ type: "planProceedRequest", revisionId: view.meta.revisionId });
   };
 
   const openInEditor = () => {
@@ -72,8 +82,28 @@ export function PlanCard({ view, isLatest, ordinal }: Props) {
 
       <p className="plan-mini-preview">{summary.preview}</p>
 
-      {(taskCount > 0 || pending > 0) && (
+      {(taskCount > 0 || pending > 0 || sectionStatus !== null) && (
         <div className="plan-mini-meta">
+          {sectionStatus && (
+            <span
+              className={
+                sectionStatus.complete
+                  ? "plan-mini-stat plan-mini-stat-ok"
+                  : "plan-mini-stat plan-mini-stat-warn"
+              }
+              title={
+                sectionStatus.complete
+                  ? "All required plan sections are present."
+                  : `Missing required sections: ${sectionStatus.missingLabels.join(", ")}`
+              }
+            >
+              <Icon name="check" size={10} />
+              {sectionStatus.present}/{sectionStatus.total} sections
+              {!sectionStatus.complete && (
+                <> · missing {sectionStatus.missingLabels.join(", ")}</>
+              )}
+            </span>
+          )}
           {taskCount > 0 && (
             <span className="plan-mini-stat">
               <Icon name="check" size={10} />
@@ -111,4 +141,34 @@ export function PlanCard({ view, isLatest, ordinal }: Props) {
       </div>
     </div>
   );
+}
+
+interface SectionStatus {
+  present: number;
+  total: number;
+  missing: Array<keyof PlanSections>;
+  missingLabels: string[];
+  complete: boolean;
+}
+
+/** Returns null if `sections` wasn't populated (legacy plan or empty body) so
+ *  the badge gracefully hides. Otherwise returns counts + missing labels. */
+function evaluateSections(sections?: PlanSections): SectionStatus | null {
+  if (!sections) return null;
+  const missing: Array<keyof PlanSections> = [];
+  for (const key of REQUIRED_PLAN_SECTIONS) {
+    const value = sections[key];
+    // Treat heading with no body as missing — the model has to actually
+    // populate the section, not just print the heading.
+    if (!value || value.trim().length === 0) missing.push(key);
+  }
+  const total = REQUIRED_PLAN_SECTIONS.length;
+  const present = total - missing.length;
+  return {
+    present,
+    total,
+    missing,
+    missingLabels: missing.map((k) => PLAN_SECTION_LABELS[k]),
+    complete: missing.length === 0
+  };
 }

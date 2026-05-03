@@ -6,18 +6,24 @@
 
 import { Icon } from "../../design/icons";
 import { IconButton } from "../../design/primitives";
-import { send, AuthMode } from "../../lib/rpc";
+import { send, AuthMode, ConventionsSource } from "../../lib/rpc";
 import { findMode } from "./constants";
 import type { PermissionMode } from "../../lib/rpc";
+import { ConventionsStatusPill } from "./ConventionsStatusPill";
 
 interface HeaderProps {
   authMode: AuthMode | null;
   permissionMode: PermissionMode;
   busy: boolean;
+  conventions: {
+    source: ConventionsSource | null;
+    path: string | null;
+    relativePath: string | null;
+  };
   onOpenHistory: () => void;
 }
 
-export function Header({ authMode, permissionMode, busy, onOpenHistory }: HeaderProps) {
+export function Header({ authMode, permissionMode, busy, conventions, onOpenHistory }: HeaderProps) {
   const mode = findMode(permissionMode);
   const authLabel = authMode === "subscription" ? "subscription" : "api key";
   return (
@@ -38,6 +44,11 @@ export function Header({ authMode, permissionMode, busy, onOpenHistory }: Header
           <Icon name={mode.icon} size={10} />
           {mode.short}
         </span>
+        <ConventionsStatusPill
+          source={conventions.source}
+          path={conventions.path}
+          relativePath={conventions.relativePath}
+        />
         {busy && (
           <span className="chip chip-busy" title="Streaming">
             <span className="spinner" />

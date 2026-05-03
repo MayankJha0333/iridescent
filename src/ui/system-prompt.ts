@@ -1,21 +1,65 @@
 // ─────────────────────────────────────────────────────────────
 // System prompt for Iridescent's agentic loop.
 //
-// Only used by the api-key (Anthropic SDK) path — the Claude CLI
-// supplies its own system prompt and ignores ours, so this needs
-// to give Sonnet/Opus the same operational stance the CLI gives
-// its own copy of Claude: "you are inside a real workspace, you
-// have tools, use them — don't ask the user to paste code."
+// Composes layers:
+//   1. Base prompt (workspace orientation, tools, boundaries) — always
+//   2. Per-mode prompt (plan / default / auto) — tunes operating stance
+//   3. Task-type playbook (plan mode only) — backend / frontend / etc.
+//   4. Project conventions (CLAUDE.md / AGENTS.md / etc.) — when present
+//
+// On the api-key path the full composed string is sent as the `system` field.
+// On the Claude CLI path, the base prompt is the `system` and the rest is
+// pushed as separate --append-system-prompt flags from claude-cli.ts. This
+// builder is the single source of truth for the api-key path; CLI calls into
+// the same getModePrompt / getTaskTypePrompt helpers directly.
 // ─────────────────────────────────────────────────────────────
+
+import { PermissionMode, TaskType } from "../core/types.js";
+import { getModePrompt, getTaskTypePrompt } from "../services/prompt-loader.js";
+import { ConventionsFile } from "../services/conventions.js";
 
 export interface SystemPromptContext {
   workspaceRoot: string;
   activeFile?: string;
   /** Optional: workspace name (basename of root). */
   workspaceName?: string;
+  permissionMode: PermissionMode;
+  taskType: TaskType;
+  conventions?: ConventionsFile | null;
+  /** True when the target provider is the Claude CLI, which auto-loads the
+   *  CLAUDE.md at workspace root. We skip injecting it ourselves to avoid
+   *  doubling the token cost. */
+  isClaudeCli: boolean;
 }
 
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
+  const parts: string[] = [basePrompt(ctx)];
+
+  parts.push(getModePrompt(ctx.permissionMode));
+
+  if (ctx.permissionMode === "plan") {
+    const tt = getTaskTypePrompt(ctx.taskType);
+    if (tt) parts.push(tt);
+  }
+
+  if (shouldInjectConventions(ctx)) {
+    parts.push(formatConventions(ctx.conventions!));
+  }
+
+  return parts.join("\n\n---\n\n");
+}
+
+function shouldInjectConventions(ctx: SystemPromptContext): boolean {
+  if (!ctx.conventions) return false;
+  if (ctx.isClaudeCli && ctx.conventions.alreadyLoadedByCli) return false;
+  return true;
+}
+
+function formatConventions(c: ConventionsFile): string {
+  return `# Project conventions (loaded from \`${c.workspaceRelativePath}\`)\n\n${c.content}`;
+}
+
+function basePrompt(ctx: SystemPromptContext): string {
   const root = ctx.workspaceRoot;
   const name = ctx.workspaceName ?? basename(root);
   const active = ctx.activeFile ? `\n- Active editor: ${ctx.activeFile}` : "";

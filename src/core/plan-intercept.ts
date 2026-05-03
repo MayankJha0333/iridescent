@@ -4,6 +4,7 @@ import {
   PlanQuestionEntry,
   PlanQuestionOption,
   PlanRevisionMeta,
+  PlanSections,
   PlanTask,
   PlanTaskFileRef,
   TimelineEvent
@@ -14,8 +15,9 @@ export const PLAN_TOOL_NAMES = new Set(["ExitPlanMode", "TodoWrite", "AskUserQue
 /**
  * Tool names that write file content. The CLI's plan-mode workflow writes
  * the plan markdown to a file *before* calling ExitPlanMode, so we sniff
- * these to recover the plan body. Names cover both api-key (fs_write) and
- * Claude CLI (Write/Create/Edit/MultiEdit) shapes.
+ * these to recover the plan body. Covers api-key (fs_write) and Claude CLI
+ * (Write/Create/Edit/MultiEdit) shapes, plus any future variant whose name
+ * contains write/create/edit (case-insensitive).
  */
 const WRITE_TOOL_NAMES = new Set([
   "Write",
@@ -26,12 +28,35 @@ const WRITE_TOOL_NAMES = new Set([
   "str_replace_editor"
 ]);
 
-/** Heuristic: true if `path` looks like the CLI's plan-mode markdown file. */
-function looksLikePlanFile(p: string): boolean {
+// Matches names that start with a write-like verb (Write, Edit, Create, Save,
+// Update, Put, Insert) or contain such a verb at a snake_case / kebab-case
+// boundary. Allows PascalCase suffixes (WritePlan, EditFile) by treating an
+// uppercase letter after the verb as a valid boundary too.
+const WRITE_TOOL_NAME_RE_PREFIX = /^(write|edit|create|save|update|put|insert)(?:$|[_-]|[A-Z])/i;
+const WRITE_TOOL_NAME_RE_BOUNDARY = /[_-](write|edit|create|save|update|put|insert)(?:$|[_-]|[A-Z])/i;
+
+function isWriteToolName(name: string): boolean {
+  return (
+    WRITE_TOOL_NAMES.has(name) ||
+    WRITE_TOOL_NAME_RE_PREFIX.test(name) ||
+    WRITE_TOOL_NAME_RE_BOUNDARY.test(name)
+  );
+}
+
+/**
+ * True if `path` looks like a plan-mode markdown file. Permissive on
+ * directory structure — any `*.md` under a `plans/` segment counts. Catches:
+ *   ~/.claude/plans/foo.md                              (legacy CLI path)
+ *   ~/.claude/projects/<encoded-cwd>/plans/foo.md       (newer per-project)
+ *   ~/.claude/agents/<id>/plans/foo.md
+ *   ~/.claude/sessions/<id>/plans/foo.md
+ *   <workspace>/plans/foo.md
+ *   <workspace>/.claude/plans/foo.md
+ */
+export function looksLikePlanFile(p: string): boolean {
   if (!p) return false;
   if (!/\.(md|markdown)$/i.test(p)) return false;
-  // ~/.claude/plans/*.md  or anything under a /plans/ directory.
-  return /(^|\/)\.claude\/plans\//.test(p) || /(^|\/)plans\//.test(p);
+  return /(?:^|\/)plans\//i.test(p);
 }
 
 interface PendingPlan {
@@ -61,8 +86,8 @@ export class PlanInterceptor {
   consume(name: string, toolUseId: string, input: Record<string, unknown>): boolean {
     // Snoop plan-file writes so ExitPlanMode can recover the plan body
     // from the file the CLI just wrote (its actual plan-mode workflow).
-    if (WRITE_TOOL_NAMES.has(name)) {
-      const path = String(input.path ?? input.file_path ?? input.filePath ?? "");
+    if (isWriteToolName(name)) {
+      const path = readWritePath(input);
       if (looksLikePlanFile(path)) {
         const content = readWriteContent(input);
         if (content) {
@@ -74,6 +99,23 @@ export class PlanInterceptor {
           this.emitFileBackedRevision(path, content, toolUseId);
           return true;
         }
+      }
+      return false;
+    }
+    // Bash heredoc fallback — newer CLI variants sometimes write the plan
+    // file via `cat > path <<EOF ... EOF` instead of the Write tool.
+    if (/^bash$/i.test(name)) {
+      const cmd = typeof input.command === "string" ? input.command : "";
+      const parsed = parseBashHeredocWrite(cmd);
+      if (parsed && looksLikePlanFile(parsed.path)) {
+        this.planFileWrites.push({
+          toolUseId,
+          path: parsed.path,
+          content: parsed.content
+        });
+        this.interceptedToolIds.add(toolUseId);
+        this.emitFileBackedRevision(parsed.path, parsed.content, toolUseId);
+        return true;
       }
       return false;
     }
@@ -142,7 +184,8 @@ export class PlanInterceptor {
       body,
       tasks: prior?.tasks ?? [],
       bodyChanged: body !== (prior?.body ?? ""),
-      planFilePath
+      planFilePath,
+      sections: parsePlanSections(body)
     };
     this.session.emitPlanRevision(meta);
   }
@@ -158,11 +201,138 @@ export class PlanInterceptor {
       body,
       tasks,
       bodyChanged: !taskOnly && body !== (prior?.body ?? ""),
-      planFilePath: this.pending.planFilePath ?? prior?.planFilePath
+      planFilePath: this.pending.planFilePath ?? prior?.planFilePath,
+      sections: body ? parsePlanSections(body) : prior?.sections
     };
     this.session.emitPlanRevision(meta);
     this.pending = {};
   }
+}
+
+/**
+ * Parse the H2 sections required by `plan-mode.md` out of the plan body.
+ * Each required section maps to one of the keys in PlanSections. Heading
+ * matching is case-insensitive and tolerates synonyms (e.g. "Risks &
+ * mitigations" → risks). The captured value is the trimmed body text under
+ * the heading, up to the next H2 or end of document. Empty string means
+ * the heading exists but has no content; undefined means the heading
+ * wasn't found at all. The PlanCard badge in the webview uses these flags
+ * to render a "5/5 sections" or "⚠ missing: Risks, Conventions" indicator.
+ */
+export function parsePlanSections(body: string): PlanSections {
+  const out: PlanSections = {};
+  if (!body) return out;
+
+  // Split on H2 headings while keeping the heading text. Lines starting with
+  // exactly `## ` (not `###` or higher).
+  const lines = body.split(/\r?\n/);
+  let currentKey: keyof PlanSections | null = null;
+  let currentBuf: string[] = [];
+
+  const flush = (): void => {
+    if (currentKey !== null) {
+      const text = currentBuf.join("\n").trim();
+      out[currentKey] = text;
+    }
+    currentBuf = [];
+  };
+
+  for (const line of lines) {
+    const m = /^##\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      flush();
+      currentKey = matchSectionHeading(m[1]);
+    } else if (currentKey !== null) {
+      currentBuf.push(line);
+    }
+  }
+  flush();
+
+  return out;
+}
+
+function matchSectionHeading(heading: string): keyof PlanSections | null {
+  const h = heading.toLowerCase().trim();
+  if (h === "context" || h.startsWith("context ")) return "context";
+  if (h === "approach" || h.startsWith("approach ")) return "approach";
+  if (
+    h === "conventions" ||
+    h === "conventions followed" ||
+    h.startsWith("conventions ")
+  ) {
+    return "conventions";
+  }
+  if (
+    h === "risks" ||
+    h === "risks & mitigations" ||
+    h === "risks and mitigations" ||
+    h.startsWith("risks ")
+  ) {
+    return "risks";
+  }
+  if (
+    h === "verification" ||
+    h === "verification & testing" ||
+    h === "verification and testing" ||
+    h.startsWith("verification ")
+  ) {
+    return "verification";
+  }
+  return null;
+}
+
+/**
+ * Parse a bash command for a `cat > path <<MARKER ... MARKER` style write.
+ * Returns the destination path and inline content if matched. Returns null
+ * for shell commands that don't match the heredoc-write shape.
+ *
+ * Supports common variations:
+ *   cat > /path/file.md <<'EOF' ... EOF
+ *   cat >> /path/file.md <<EOF ... EOF
+ *   cat <<EOF > /path/file.md ... EOF
+ *   tee /path/file.md <<EOF ... EOF
+ *   tee -a /path/file.md <<'MARK' ... MARK
+ */
+export function parseBashHeredocWrite(
+  cmd: string
+): { path: string; content: string } | null {
+  if (!cmd) return null;
+
+  // Form 1: `<verb> [opts] <path> <<['"]?MARKER['"]?\n...\nMARKER`
+  // Form 2: `<verb> <<['"]?MARKER['"]?... <path>...`  (heredoc before path)
+  // We support both by trying redirect-after-path first, then path-after-heredoc.
+
+  // cat > path <<MARKER  /  cat >> path <<MARKER  /  tee path <<MARKER
+  let m = /(?:cat|tee)\s+(?:-a\s+)?(?:>+\s*)?(\S+\.(?:md|markdown))\s*<<-?\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\2\s*$/m.exec(
+    cmd
+  );
+  if (m) return { path: m[1], content: m[3] };
+
+  // cat <<MARKER > path  ...  MARKER  (heredoc declared before redirect)
+  m = /cat\s+<<-?\s*['"]?(\w+)['"]?\s*>+\s*(\S+\.(?:md|markdown))\s*\n([\s\S]*?)\n\1\s*$/m.exec(
+    cmd
+  );
+  if (m) return { path: m[2], content: m[3] };
+
+  return null;
+}
+
+/** Pull the destination path out of a Write/Edit/Create input shape. Tolerates
+ *  the various field-name conventions different SDKs / CLI versions use. */
+function readWritePath(input: Record<string, unknown>): string {
+  const candidates = [
+    input.path,
+    input.file_path,
+    input.filePath,
+    input.target_file,
+    input.target,
+    input.destination,
+    input.uri
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c) return c;
+  }
+  return "";
 }
 
 /** Pull the new file content out of a Write/Edit/Create input shape. */
@@ -172,7 +342,10 @@ function readWriteContent(input: Record<string, unknown>): string {
     input.file_text,
     input.text,
     input.new_str,
-    input.body
+    input.body,
+    input.markdown,
+    input.data,
+    input.value
   ];
   for (const c of candidates) {
     if (typeof c === "string") return c;

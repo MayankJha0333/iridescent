@@ -2,7 +2,8 @@ import * as path from "node:path";
 import { ChatProvider } from "./base.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { ClaudeCliProvider } from "./claude-cli.js";
-import { PermissionMode } from "../core/types.js";
+import { PermissionMode, TaskType } from "../core/types.js";
+import { ConventionsFile } from "../services/conventions.js";
 
 export type AuthMode = "subscription" | "apikey";
 
@@ -15,6 +16,12 @@ export interface ProviderContext {
   /** Skill ids the user has toggled OFF in the picker. Subscription mode
    *  enforces them via --disallowedTools + --append-system-prompt. */
   disabledSkills?: string[];
+  /** Heuristic task classification for the current turn — drives task-type
+   *  playbook injection in plan mode (subscription path). */
+  taskType?: TaskType;
+  /** Project conventions file (CLAUDE.md / AGENTS.md / etc.) for the current
+   *  workspace — auto-discovered, injected into the system prompt. */
+  conventions?: ConventionsFile | null;
   getResumeSessionId?: () => string | undefined;
   setResumeSessionId?: (id: string) => void;
 }
@@ -44,6 +51,8 @@ export function createProvider(ctx: ProviderContext): ChatProvider {
       permissionMode: ctx.permissionMode,
       allowedBashPatterns: ctx.allowedBashPatterns,
       disabledSkills: ctx.disabledSkills,
+      taskType: ctx.taskType,
+      conventions: ctx.conventions,
       getResumeSessionId: ctx.getResumeSessionId,
       setResumeSessionId: ctx.setResumeSessionId
     });

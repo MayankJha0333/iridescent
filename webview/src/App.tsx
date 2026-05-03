@@ -16,7 +16,8 @@ import {
   TimelineEvent,
   EditorContext,
   ModelInfo,
-  SkillInfo
+  SkillInfo,
+  ConventionsSource
 } from "./lib/rpc";
 import { Spinner, type CodeInsert } from "./design/primitives";
 import { AuthGate } from "./features/auth/AuthGate";
@@ -76,6 +77,18 @@ export function App() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [composerFocusKey, setComposerFocusKey] = useState(0);
   const [pendingInsert, setPendingInsert] = useState<CodeInsert | null>(null);
+  const [conventions, setConventions] = useState<{
+    source: ConventionsSource | null;
+    path: string | null;
+    relativePath: string | null;
+  }>({ source: null, path: null, relativePath: null });
+  const [bannerVisible, setBannerVisible] = useState(false);
+  const [skillSuggestion, setSkillSuggestion] = useState<{
+    skillId: string;
+    skillName: string;
+    reason: string;
+    taskType: string;
+  } | null>(null);
 
   // Persist non-volatile UI state.
   useEffect(() => {
@@ -195,6 +208,24 @@ export function App() {
           setError(null);
           setBusy(false);
           break;
+        case "conventionsStatus":
+          setConventions({
+            source: m.source,
+            path: m.path,
+            relativePath: m.relativePath
+          });
+          break;
+        case "conventionsBanner":
+          setBannerVisible(true);
+          break;
+        case "skillSuggestion":
+          setSkillSuggestion({
+            skillId: m.skillId,
+            skillName: m.skillName,
+            reason: m.reason,
+            taskType: m.taskType
+          });
+          break;
       }
     });
     send({ type: "refreshAuth" });
@@ -236,6 +267,11 @@ export function App() {
         skills={skills}
         composerFocusKey={composerFocusKey}
         pendingInsert={pendingInsert}
+        conventions={conventions}
+        bannerVisible={bannerVisible}
+        onHideBanner={() => setBannerVisible(false)}
+        skillSuggestion={skillSuggestion}
+        onDismissSkillSuggestion={() => setSkillSuggestion(null)}
         onInserted={() => setPendingInsert(null)}
         onInput={setInput}
         onSubmit={(text) => {

@@ -1,7 +1,9 @@
 import { spawn, ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
 import { ChatProvider, ProviderRequest } from "./base.js";
-import { ContentBlock, Message, PermissionMode, StreamDelta } from "../core/types.js";
+import { ContentBlock, Message, PermissionMode, StreamDelta, TaskType } from "../core/types.js";
+import { getModePrompt, getTaskTypePrompt } from "../services/prompt-loader.js";
+import { ConventionsFile } from "../services/conventions.js";
 
 const HARD_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -13,6 +15,12 @@ export interface ClaudeCliOpts {
   /** Skill ids the user toggled OFF in the picker. Enforced via
    *  --disallowedTools "Skill(<id>)" plus a system-prompt append. */
   disabledSkills?: string[];
+  /** Heuristic task classification — drives task-type playbook injection
+   *  in plan mode only. */
+  taskType?: TaskType;
+  /** Project conventions file (CLAUDE.md / AGENTS.md / etc.). Injected via
+   *  --append-system-prompt unless `alreadyLoadedByCli` is true. */
+  conventions?: ConventionsFile | null;
   getResumeSessionId?: () => string | undefined;
   setResumeSessionId?: (id: string) => void;
 }
@@ -156,6 +164,27 @@ export function buildArgs(
     args.push(
       "--append-system-prompt",
       `The user has disabled the following Claude Code skills via Iridescent's Skills picker: ${list}. Do not invoke any of them, even if a task would benefit. If you would normally use a disabled skill, tell the user which skill is disabled and ask them to re-enable it from the Skills picker before retrying. All other skills remain available.`
+    );
+  }
+
+  // Per-mode prompt: bundled MD that tunes the model's stance for plan/default/auto.
+  const mode = opts.permissionMode ?? "default";
+  const modeAppend = getModePrompt(mode);
+  if (modeAppend) args.push("--append-system-prompt", modeAppend);
+
+  // Plan-mode only: the matching task-type playbook (backend / frontend / etc.).
+  // Skipped for default/auto to keep their token budgets lean.
+  if (mode === "plan" && opts.taskType) {
+    const taskAppend = getTaskTypePrompt(opts.taskType);
+    if (taskAppend) args.push("--append-system-prompt", taskAppend);
+  }
+
+  // Project conventions. CLAUDE.md at root is auto-loaded by the CLI itself —
+  // re-injecting would double the token cost — so skip in that case.
+  if (opts.conventions && !opts.conventions.alreadyLoadedByCli) {
+    args.push(
+      "--append-system-prompt",
+      `Project conventions from \`${opts.conventions.workspaceRelativePath}\`:\n\n${opts.conventions.content}`
     );
   }
 

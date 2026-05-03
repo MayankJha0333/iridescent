@@ -3,6 +3,7 @@ import { ChatPanelProvider } from "./ui/panel.js";
 import { registerDiffProvider } from "./services/diff.js";
 import { setApiKey } from "./secrets.js";
 import { inlineEditCommand, explainCommand, refactorCommand, fixBugCommand } from "./commands/inline-edit.js";
+import { generateConventionsCommand } from "./commands/init-conventions.js";
 import { PermissionMode } from "./core/types.js";
 
 export function activate(ctx: vscode.ExtensionContext) {
@@ -36,6 +37,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("iridescent.sendSelection", () => panel.sendSelectionToChat()),
     vscode.commands.registerCommand("iridescent.commentOnSelection", () =>
       panel.commentOnEditorSelection()
+    ),
+    vscode.commands.registerCommand("iridescent.generateConventions", () =>
+      generateConventionsCommand(panel)
     )
   );
 }

@@ -68,7 +68,34 @@ export interface PlanRevisionMeta {
   tasks: PlanTask[];
   bodyChanged: boolean;
   planFilePath?: string;
+  sections?: PlanSections;
 }
+
+export interface PlanSections {
+  context?: string;
+  approach?: string;
+  conventions?: string;
+  risks?: string;
+  verification?: string;
+}
+
+export const REQUIRED_PLAN_SECTIONS: ReadonlyArray<keyof PlanSections> = [
+  "context",
+  "approach",
+  "conventions",
+  "risks",
+  "verification"
+] as const;
+
+/** Display labels for missing-section badges, in the same order as
+ *  REQUIRED_PLAN_SECTIONS. */
+export const PLAN_SECTION_LABELS: Record<keyof PlanSections, string> = {
+  context: "Context",
+  approach: "Approach",
+  conventions: "Conventions",
+  risks: "Risks",
+  verification: "Verification"
+};
 
 export interface PlanQuestionOption {
   label: string;
@@ -260,7 +287,12 @@ export type Outbound =
       toolUseId: string;
       answers: Array<{ choice: string; note?: string }>;
     }
-  | { type: "planRewindTo"; revisionId: string };
+  | { type: "planRewindTo"; revisionId: string }
+  | { type: "planProceedRequest"; revisionId: string }
+  | { type: "dismissConventionsBanner" }
+  | { type: "openConventionsFile"; path: string }
+  | { type: "generateConventions" }
+  | { type: "dismissSkillSuggestion"; skillId: string };
 
 // ── Inbound (extension → webview) ─────────────────────────────
 
@@ -307,7 +339,30 @@ export type Inbound =
       installPath?: string;
       filesWritten?: number;
       error?: string;
+    }
+  | {
+      type: "conventionsStatus";
+      source: ConventionsSource | null;
+      path: string | null;
+      relativePath: string | null;
+      hasAlternative: boolean;
+    }
+  | { type: "conventionsBanner" }
+  | {
+      type: "skillSuggestion";
+      skillId: string;
+      skillName: string;
+      reason: string;
+      taskType: string;
     };
+
+export type ConventionsSource =
+  | "claude-root"
+  | "claude-dotfolder"
+  | "agents"
+  | "copilot"
+  | "cursor"
+  | "cline";
 
 // ── API ───────────────────────────────────────────────────────
 
