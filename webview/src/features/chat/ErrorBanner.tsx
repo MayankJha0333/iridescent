@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import { send } from "../../lib/rpc";
 
 interface ErrorBannerProps {
@@ -12,29 +13,43 @@ export function ErrorBanner({ text, onDismiss }: ErrorBannerProps) {
   const icon = isRateLimit ? "⏱" : isAuth ? "🔒" : "⚠";
 
   return (
-    <div className="error-banner" role="alert">
-      <div className="error-head">
-        <span className="error-icon" aria-hidden>
+    <motion.div
+      className="bg-err-soft border border-[rgba(248,113,113,0.35)] rounded-[10px] px-[13px] py-[11px] ml-9"
+      role="alert"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+    >
+      <div className="flex items-center gap-2 mb-[5px]">
+        <span className="text-[13px]" aria-hidden>
           {icon}
         </span>
-        <span className="error-title">{title}</span>
+        <span className="font-bold text-err text-[12.5px] flex-1 tracking-[-0.1px]">
+          {title}
+        </span>
         <button
           type="button"
-          className="error-dismiss"
+          className="bg-transparent border-0 text-t3 cursor-pointer text-[18px] leading-none px-1 py-0 hover:text-t1"
           onClick={onDismiss}
           aria-label="Dismiss"
         >
           ×
         </button>
       </div>
-      <div className="error-body">{text}</div>
+      <div className="text-[12px] leading-[1.55] text-t2 font-mono whitespace-pre-wrap break-words">
+        {text}
+      </div>
       {(isAuth || isRateLimit) && (
-        <div className="error-actions">
-          <button type="button" onClick={() => send({ type: "authReset" })}>
+        <div className="mt-2 flex gap-1.5">
+          <button
+            type="button"
+            className="bg-transparent border border-[rgba(248,113,113,0.4)] text-err px-[11px] py-1 rounded-md cursor-pointer text-[11.5px] font-semibold font-[inherit] transition-colors duration-[120ms] hover:bg-[rgba(248,113,113,0.15)]"
+            onClick={() => send({ type: "authReset" })}
+          >
             {isRateLimit ? "Switch auth" : "Logout & Reconnect"}
           </button>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

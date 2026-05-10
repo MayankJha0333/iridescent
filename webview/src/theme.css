@@ -1,9 +1,50 @@
 /* ═══════════════════════════════════════════════════════════════
    Iridescent — Forge Premium theme
    Dark-first, warm charcoal surfaces, indigo accent, luminous glow.
+
+   Tailwind v4 is layered on top via @import "tailwindcss" — the
+   @theme block bridges this design-system's CSS variables to
+   Tailwind utility tokens so utilities like `bg-s1`, `text-t1`,
+   `text-accent`, `border-b2` resolve to the same colors used by
+   the legacy semantic classes below. This lets components use
+   Tailwind utilities while the design tokens stay in one place.
    ═══════════════════════════════════════════════════════════════ */
 
 @import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --color-s0: var(--s0);
+  --color-s1: var(--s1);
+  --color-s2: var(--s2);
+  --color-s3: var(--s3);
+  --color-b1: var(--b1);
+  --color-b2: var(--b2);
+  --color-b3: var(--b3);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-t4: var(--t4);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-glow: var(--accent-glow);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-mid: var(--accent-mid);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-err: var(--err);
+  --color-err-soft: var(--err-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-glass: var(--glass);
+  --color-glass-border: var(--glass-border);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-md: 10px;
+  --radius-sm: 8px;
+}
 
 :root {
   /* Surfaces — 4 elevations, warm charcoal */

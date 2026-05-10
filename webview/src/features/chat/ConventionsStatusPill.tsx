@@ -34,7 +34,7 @@ export function ConventionsStatusPill({
   return (
     <button
       type="button"
-      className="chip chip-conventions"
+      className="inline-flex items-center gap-1.5 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-[0.1px] tabular-nums whitespace-nowrap font-[inherit] border bg-s2 border-b2 text-t2 cursor-pointer transition-colors duration-[120ms] hover:bg-s1 hover:text-t1"
       onClick={handle}
       title={`Project conventions loaded from ${relativePath ?? path}. Click to open.`}
     >

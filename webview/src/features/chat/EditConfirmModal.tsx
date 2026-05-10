@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import { useEffect } from "react";
+import { motion } from "framer-motion";
 
 interface EditConfirmModalProps {
   messagesAfter: number;
@@ -50,43 +51,54 @@ export function EditConfirmModal({
   const body = `Submitting from a previous message will revert file changes to before this message${clearedClause}.`;
 
   return (
-    <div
-      className="modal-backdrop edit-modal-backdrop"
+    <motion.div
+      className="fixed inset-0 z-[1000] grid place-items-center bg-black/55 backdrop-blur-[2px]"
       onClick={onCancel}
       role="dialog"
       aria-modal="true"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <div
-        className="modal edit-modal"
+      <motion.div
+        className="w-[460px] max-w-[92vw] rounded-xl bg-s1 border border-b2 shadow-[0_24px_60px_rgba(0,0,0,0.55)] p-5"
         onClick={(e) => e.stopPropagation()}
+        initial={{ scale: 0.94, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.94, opacity: 0 }}
+        transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
       >
-        <h2 className="modal-title">Submit from a previous message?</h2>
-        <p className="modal-body">{body}</p>
-        <div className="modal-actions edit-modal-actions">
+        <h2 className="text-[15px] font-bold text-t1 m-0 mb-1.5">
+          Submit from a previous message?
+        </h2>
+        <p className="text-[12.5px] leading-[1.5] text-t2 m-0 mb-[18px]">{body}</p>
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
-            className="modal-btn modal-btn-link"
+            className="px-2.5 py-1.5 rounded-md bg-transparent border border-transparent text-t2 text-[12px] font-semibold font-[inherit] cursor-pointer transition-colors duration-[120ms] hover:text-t1 hover:bg-s2"
             onClick={onCancel}
           >
-            Cancel <span className="modal-kbd">(esc)</span>
+            Cancel <span className="ml-1.5 text-[11px] font-mono opacity-70 font-medium">(esc)</span>
           </button>
           <button
             type="button"
-            className="modal-btn modal-btn-secondary"
+            className="px-3.5 py-1.5 rounded-md bg-s2 border border-b2 text-t1 text-[12px] font-semibold font-[inherit] cursor-pointer transition-colors duration-[120ms] hover:bg-s3 hover:border-b3"
             onClick={onDontRevert}
           >
-            Don't revert <span className="modal-kbd">⇧↵</span>
+            Don't revert
+            <span className="ml-1.5 text-[11px] font-mono opacity-70 font-medium">⇧↵</span>
           </button>
           <button
             type="button"
-            className="modal-btn modal-btn-primary"
+            className="px-3.5 py-1.5 rounded-md bg-accent border border-accent-mid text-white text-[12px] font-semibold font-[inherit] cursor-pointer transition-colors duration-[120ms] hover:bg-accent-deep"
             onClick={onRevert}
             autoFocus
           >
-            Revert <span className="modal-kbd">↵</span>
+            Revert <span className="ml-1.5 text-[11px] font-mono text-white/85 font-medium">↵</span>
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

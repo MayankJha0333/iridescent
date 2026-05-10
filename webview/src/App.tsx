@@ -235,8 +235,8 @@ export function App() {
 
   if (auth.status === "loading") {
     return (
-      <div className="app">
-        <div className="loading">
+      <div className="flex flex-col h-screen relative bg-s0">
+        <div className="flex items-center justify-center h-full">
           <Spinner size={48} />
         </div>
       </div>
@@ -245,14 +245,14 @@ export function App() {
 
   if (auth.status === "unauthed") {
     return (
-      <div className="app">
+      <div className="flex flex-col h-screen relative bg-s0">
         <AuthGate validating={auth.validating} error={auth.error} />
       </div>
     );
   }
 
   return (
-    <div className="app">
+    <div className="flex flex-col h-screen relative bg-s0">
       <ChatScreen
         authMode={auth.mode}
         model={auth.model}

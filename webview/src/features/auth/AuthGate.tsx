@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import { KeyboardEvent, useState } from "react";
+import { motion } from "framer-motion";
 import { Orb } from "../../design/primitives";
 import { send } from "../../lib/rpc";
 
@@ -14,6 +15,9 @@ export interface AuthGateProps {
   validating: boolean;
   error: string | null;
 }
+
+const PRIMARY =
+  "w-full bg-accent text-white border-0 px-3 py-[11px] rounded-lg cursor-pointer text-[13px] font-bold tracking-[-0.1px] transition-all duration-150 mt-1 font-[inherit] hover:not-[:disabled]:bg-accent-deep disabled:opacity-45 disabled:cursor-not-allowed disabled:shadow-none";
 
 export function AuthGate({ validating, error }: AuthGateProps) {
   const [tab, setTab] = useState<Tab>("subscription");
@@ -35,19 +39,28 @@ export function AuthGate({ validating, error }: AuthGateProps) {
   const detected = detectTokenKind(key);
 
   return (
-    <div className="auth">
-      <div className="auth-hero">
+    <motion.div
+      className="flex-1 overflow-y-auto px-[22px] pt-8 pb-[18px] flex flex-col bg-s0"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.24, ease: "easeOut" }}
+    >
+      <div className="text-center mb-[22px] flex flex-col items-center">
         <Orb size={64} />
-        <h1 className="auth-title">Welcome to Iridescent</h1>
-        <p className="auth-sub">Agentic coding assistant for VS Code. Sign in to start.</p>
+        <h1 className="text-[22px] font-extrabold tracking-[-0.5px] m-0 mb-1.5 text-t1">
+          Welcome to Iridescent
+        </h1>
+        <p className="text-[13px] text-t3 m-0 leading-[1.5]">
+          Agentic coding assistant for VS Code. Sign in to start.
+        </p>
       </div>
 
-      <div className="auth-tabs" role="tablist">
+      <div className="flex gap-[3px] p-[3px] bg-s1 rounded-[10px] border border-b1 mb-3.5" role="tablist">
         <TabButton id="subscription" active={tab} onClick={setTab}>Subscription</TabButton>
-        <TabButton id="apikey"        active={tab} onClick={setTab}>API key</TabButton>
+        <TabButton id="apikey" active={tab} onClick={setTab}>API key</TabButton>
       </div>
 
-      <div className="auth-panel">
+      <div className="bg-s1 border border-b1 rounded-xl p-[18px] mb-3">
         {tab === "subscription" && <SubscriptionPanel validating={validating} />}
         {tab === "apikey" && (
           <ApiKeyPanel
@@ -62,10 +75,10 @@ export function AuthGate({ validating, error }: AuthGateProps) {
         )}
       </div>
 
-      <div className="auth-foot">
+      <div className="text-center text-[11px] text-t4 mt-auto pt-3">
         <span>Credentials stored in VS Code SecretStorage (OS keychain).</span>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -80,20 +93,23 @@ function TabButton({
   onClick: (t: Tab) => void;
   children: string;
 }) {
+  const isActive = active === id;
   return (
     <button
       type="button"
       role="tab"
-      aria-selected={active === id}
-      className={`auth-tab${active === id ? " active" : ""}`}
+      aria-selected={isActive}
+      className={`flex-1 bg-transparent border-0 text-t3 px-2.5 py-2 rounded-[7px] cursor-pointer text-[12px] font-semibold transition-colors duration-[140ms] whitespace-nowrap font-[inherit] hover:text-t1 ${
+        isActive
+          ? "bg-s3 text-t1 shadow-[0_1px_3px_rgba(0,0,0,0.4)]"
+          : ""
+      }`}
       onClick={() => onClick(id)}
     >
       {children}
     </button>
   );
 }
-
-// ── Subscription panel ───────────────────────────────────────
 
 interface SubscriptionPanelProps {
   validating: boolean;
@@ -103,10 +119,6 @@ function SubscriptionPanel({ validating }: SubscriptionPanelProps) {
   const runCmd = (command: string) => send({ type: "runTerminalCommand", command });
   const [signedIn, setSignedIn] = useState(false);
 
-  // Click flow: open `claude login` in a terminal so the user can authorize
-  // in their browser, and immediately mark subscription mode active. If the
-  // user doesn't actually finish login, the first chat message will surface
-  // the auth error — at which point they can rerun login from the terminal.
   const onClick = () => {
     runCmd("claude login");
     setSignedIn(true);
@@ -115,28 +127,27 @@ function SubscriptionPanel({ validating }: SubscriptionPanelProps) {
 
   return (
     <>
-      <p className="auth-desc">
-        Sign in once with your <strong>Claude</strong> account. Works with Pro, Max, Team, or
+      <p className="text-[13px] leading-[1.55] m-0 mb-3 text-t2">
+        Sign in once with your <strong className="text-accent-glow font-bold">Claude</strong> account. Works with Pro, Max, Team, or
         Enterprise — no API key needed.
       </p>
       <button
         type="button"
-        className="auth-primary"
+        className={PRIMARY}
+        style={{ boxShadow: "0 2px 12px var(--accent-shadow)" }}
         onClick={onClick}
         disabled={validating || signedIn}
       >
         {signedIn ? "Connecting…" : "Sign in with Claude"}
       </button>
       {signedIn && (
-        <p className="auth-desc muted" style={{ marginTop: 10 }}>
+        <p className="text-[13px] leading-[1.55] mt-2.5 mb-0 text-t3">
           Complete the sign-in in the terminal/browser. You can start chatting as soon as it's done.
         </p>
       )}
     </>
   );
 }
-
-// ── API key panel ────────────────────────────────────────────
 
 interface ApiKeyPanelProps {
   keyVal: string;
@@ -158,28 +169,39 @@ function ApiKeyPanel({
   detected
 }: ApiKeyPanelProps) {
   const open = (url: string) => send({ type: "openExternal", url });
+  const detectClass =
+    detected === "api"
+      ? "text-ok"
+      : detected === "oauth" || detected === "unknown"
+        ? "text-warn"
+        : "text-t3";
+
   return (
     <>
-      <p className="auth-desc">
-        Bring your own <strong>Anthropic Console</strong> API key. Pre-paid credits required.
+      <p className="text-[13px] leading-[1.55] m-0 mb-3 text-t2">
+        Bring your own <strong className="text-accent-glow font-bold">Anthropic Console</strong> API key. Pre-paid credits required.
         Works with any model and has higher programmatic limits than subscriptions.
       </p>
-      <ol className="auth-steps">
-        <li>
+      <ol className="pl-[18px] m-0 mb-3.5 text-[12.5px] leading-[1.7] text-t2 list-decimal">
+        <li className="mb-1">
           <button
             type="button"
-            className="inline-btn"
+            className="bg-transparent border border-accent-mid text-accent-glow px-2.5 py-1 rounded-md cursor-pointer text-[12px] font-semibold font-[inherit] transition-colors duration-[120ms] hover:bg-accent-soft hover:border-accent hover:text-t1"
             onClick={() => open("https://console.anthropic.com/settings/keys")}
           >
             Open console.anthropic.com ↗
           </button>
         </li>
-        <li>
-          Create a new key (starts with <code>sk-ant-api03-…</code>).
+        <li className="mb-1">
+          Create a new key (starts with{" "}
+          <code className="inline-block bg-s2 border border-b1 px-1.5 py-px rounded-[4px] font-mono text-[11.5px] text-accent-glow">
+            sk-ant-api03-…
+          </code>
+          ).
         </li>
-        <li>Paste below.</li>
+        <li className="mb-1">Paste below.</li>
       </ol>
-      <div className="auth-field">
+      <div className="my-2">
         <input
           type="password"
           autoFocus
@@ -189,9 +211,10 @@ function ApiKeyPanel({
           onKeyDown={onKeyDown}
           disabled={validating}
           spellCheck={false}
+          className="w-full bg-s2 text-t1 border border-b2 rounded-lg px-3 py-2.5 font-mono text-[12px] focus:outline-none focus:border-accent focus:ring-[3px] focus:ring-accent-soft"
         />
         {keyVal && (
-          <div className={`auth-detect ${detected}`}>
+          <div className={`mt-1.5 text-[11px] font-medium ${detectClass}`}>
             {detected === "api" && "✓ Console API key"}
             {detected === "oauth" &&
               "⚠ This is a subscription OAuth token. Use the Subscription tab instead."}
@@ -200,10 +223,15 @@ function ApiKeyPanel({
           </div>
         )}
       </div>
-      {error && <div className="auth-error">{error}</div>}
+      {error && (
+        <div className="bg-err-soft text-err border border-[rgba(248,113,113,0.35)] rounded-lg px-3 py-2.5 text-[12px] my-2.5 leading-[1.45]">
+          {error}
+        </div>
+      )}
       <button
         type="button"
-        className="auth-primary"
+        className={PRIMARY}
+        style={{ boxShadow: "0 2px 12px var(--accent-shadow)" }}
         onClick={onSubmit}
         disabled={!keyVal.trim() || validating || detected !== "api"}
       >
@@ -212,8 +240,6 @@ function ApiKeyPanel({
     </>
   );
 }
-
-// ── Helpers ──────────────────────────────────────────────────
 
 function detectTokenKind(token: string): TokenKind {
   const t = token.trim();

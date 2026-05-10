@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
 import {
   send,
   TimelineEvent,
@@ -187,7 +188,11 @@ export function ChatScreen({
         />
       )}
 
-      <div className="log" ref={logRef} onScroll={onScroll}>
+      <div
+        ref={logRef}
+        onScroll={onScroll}
+        className="flex-1 overflow-y-auto px-4 pt-[18px] pb-3 flex flex-col gap-[18px] scroll-smooth [&>*]:flex-shrink-0"
+      >
         {grouped.groups.length === 0 && !streaming && <EmptyState />}
         {grouped.groups.map((g, i) => {
           const isLatestTurn =
@@ -230,43 +235,47 @@ export function ChatScreen({
         {error && <ErrorBanner text={error} onDismiss={onDismissError} />}
       </div>
 
-      {pendingRewind && (
-        <RewindModal
-          messagesAfter={pendingRewind.messagesAfter}
-          onCancel={() => setPendingRewind(null)}
-          onConfirm={() => {
-            send({ type: "rewindTo", turnId: pendingRewind.turnId });
-            setPendingRewind(null);
-          }}
-        />
-      )}
+      <AnimatePresence>
+        {pendingRewind && (
+          <RewindModal
+            key="rewind-modal"
+            messagesAfter={pendingRewind.messagesAfter}
+            onCancel={() => setPendingRewind(null)}
+            onConfirm={() => {
+              send({ type: "rewindTo", turnId: pendingRewind.turnId });
+              setPendingRewind(null);
+            }}
+          />
+        )}
 
-      {pendingEdit && (
-        <EditConfirmModal
-          messagesAfter={pendingEdit.messagesAfter}
-          onCancel={() => setPendingEdit(null)}
-          onDontRevert={() => {
-            send({
-              type: "editAt",
-              turnId: pendingEdit.turnId,
-              text: pendingEdit.text,
-              revertFiles: false
-            });
-            setPendingEdit(null);
-            setEditingTurnId(null);
-          }}
-          onRevert={() => {
-            send({
-              type: "editAt",
-              turnId: pendingEdit.turnId,
-              text: pendingEdit.text,
-              revertFiles: true
-            });
-            setPendingEdit(null);
-            setEditingTurnId(null);
-          }}
-        />
-      )}
+        {pendingEdit && (
+          <EditConfirmModal
+            key="edit-modal"
+            messagesAfter={pendingEdit.messagesAfter}
+            onCancel={() => setPendingEdit(null)}
+            onDontRevert={() => {
+              send({
+                type: "editAt",
+                turnId: pendingEdit.turnId,
+                text: pendingEdit.text,
+                revertFiles: false
+              });
+              setPendingEdit(null);
+              setEditingTurnId(null);
+            }}
+            onRevert={() => {
+              send({
+                type: "editAt",
+                turnId: pendingEdit.turnId,
+                text: pendingEdit.text,
+                revertFiles: true
+              });
+              setPendingEdit(null);
+              setEditingTurnId(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
 
       <HistoryDrawer
         open={historyOpen}
@@ -280,7 +289,11 @@ export function ChatScreen({
       {userScrolled.current && (
         <button
           type="button"
-          className="scroll-fab"
+          className="absolute right-[18px] bottom-[130px] w-8 h-8 rounded-full bg-accent text-white border-0 cursor-pointer text-[14px] font-[inherit] z-[5] transition-transform duration-[140ms] hover:-translate-y-0.5"
+          style={{
+            boxShadow:
+              "0 4px 16px var(--accent-shadow), 0 8px 24px rgba(0,0,0,0.4)"
+          }}
           aria-label="Scroll to bottom"
           onClick={() => {
             userScrolled.current = false;
@@ -293,7 +306,7 @@ export function ChatScreen({
         </button>
       )}
 
-      <div className="composer-shell">
+      <div className="px-3 pb-3 pt-1 flex flex-col gap-2 bg-s0 border-t border-b1">
         <ContextStrip context={editorContext} />
         <Composer
           value={input}
@@ -589,7 +602,7 @@ function renderGroup(
   const hasWork = !!g.thought || g.blocks.length > 0;
   const collapsed = isTurnCollapsed(g.turnId, hasWork, isLatestTurn);
   return (
-    <div key={g.turnId} className="turn">
+    <div key={g.turnId} className="mt-1 mx-3.5 mb-3">
       {hasWork && (
         <>
           <TurnHeader
@@ -598,7 +611,7 @@ function renderGroup(
             onToggle={() => toggleTurn(g.turnId, collapsed)}
           />
           {!collapsed && (
-            <div className="turn-body">
+            <div className="flex flex-col gap-0.5">
               {g.thought && (
                 <ThoughtBlock text={g.thought} durationMs={g.thoughtMs} />
               )}
@@ -608,7 +621,7 @@ function renderGroup(
         </>
       )}
       {g.responseBlocks.length > 0 && (
-        <div className="turn-response">
+        <div className="flex flex-col gap-1.5 mt-1.5">
           {g.responseBlocks.map((b, i) => renderTurnBlock(b, i, ctx))}
         </div>
       )}
@@ -623,7 +636,10 @@ function renderTurnBlock(
 ) {
   if (b.kind === "narrative") {
     return (
-      <div key={`n-${i}`} className="narrative">
+      <div
+        key={`n-${i}`}
+        className="md p-1 text-t1 text-[13px] leading-[1.55] [&>p:first-child]:mt-0 [&>p:last-child]:mb-0"
+      >
         {renderMarkdown(b.text)}
       </div>
     );

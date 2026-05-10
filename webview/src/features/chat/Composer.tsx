@@ -200,10 +200,17 @@ export function Composer({
   const canSend = !busy && value.trim().length > 0;
   const mode = findMode(permissionMode);
 
+  const wrapperCls = [
+    "relative bg-s2 border rounded-xl overflow-visible transition-[border-color,box-shadow] duration-150",
+    inline ? "mx-0 my-0 border-accent-mid shadow-[0_0_0_1px_var(--accent-soft)]" : "mx-3 mt-2 mb-3 border-b2",
+    !inline && focused ? "border-accent shadow-[0_0_0_3px_var(--accent-soft)]" : "",
+    busy ? "opacity-90 [&_.dropdown]:opacity-100 [&_.mention-popover]:opacity-100" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div
-      className={`cmp${focused ? " focused" : ""}${busy ? " busy" : ""}${inline ? " cmp-inline" : ""}`}
-    >
+    <div className={wrapperCls}>
       <MentionPopover
         open={mention.active}
         query={mention.query}
@@ -212,7 +219,7 @@ export function Composer({
       />
 
       <div
-        className="cmp-editor-wrap"
+        className="relative w-full"
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       >
@@ -228,11 +235,11 @@ export function Composer({
       </div>
 
       {inline ? (
-        <div className="cmp-toolbar cmp-toolbar-inline">
-          <div className="cmp-spacer" />
+        <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-b1">
+          <div className="flex-1" />
           <button
             type="button"
-            className="modal-btn modal-btn-secondary cmp-inline-cancel"
+            className="px-2.5 py-1 rounded-md bg-s2 border border-b2 text-t2 text-[11px] font-semibold font-[inherit] cursor-pointer transition-colors hover:bg-s3 hover:text-t1 hover:border-b3"
             onClick={() => onDiscard?.()}
             title="Cancel edit (Esc)"
           >
@@ -240,7 +247,7 @@ export function Composer({
           </button>
           <button
             type="button"
-            className="cmp-send"
+            className={SEND_BTN}
             onClick={handleSubmit}
             disabled={!canSend}
             title="Send (↵)"
@@ -250,86 +257,97 @@ export function Composer({
           </button>
         </div>
       ) : (
-      <div className="cmp-toolbar">
-        <Dropdown<PermissionMode>
-          options={MODES.map((m) => ({
-            value: m.value,
-            label: m.label,
-            note: m.note,
-            icon: m.icon
-          }))}
-          value={permissionMode}
-          onSelect={(v) => send({ type: "setPermissionMode", mode: v })}
-          align="left"
-          placement="above"
-          ariaLabel="Permission mode"
-          triggerClassName="cmp-mode"
-          trigger={() => (
-            <>
-              <Icon name={mode.icon} size={12} />
-              <span>{mode.short}</span>
-              <Icon name="chevronD" size={9} />
-            </>
+        <div className="flex items-center gap-1 px-2 py-1.5 border-t border-b1">
+          <Dropdown<PermissionMode>
+            options={MODES.map((m) => ({
+              value: m.value,
+              label: m.label,
+              note: m.note,
+              icon: m.icon
+            }))}
+            value={permissionMode}
+            onSelect={(v) => send({ type: "setPermissionMode", mode: v })}
+            align="left"
+            placement="above"
+            ariaLabel="Permission mode"
+            triggerClassName={MODE_BTN}
+            trigger={() => (
+              <>
+                <Icon name={mode.icon} size={12} />
+                <span>{mode.short}</span>
+                <Icon name="chevronD" size={9} />
+              </>
+            )}
+          />
+
+          <SkillsPicker skills={skills} />
+
+          <div className="w-px h-4 bg-b1 mx-1" />
+
+          <button
+            type="button"
+            className={TOOL_BTN}
+            title="Mention a file (@)"
+            aria-label="Mention a file"
+            onClick={() => insertTokenAtCursor("@")}
+          >
+            <Icon name="at" size={13} />
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-transparent border-0 text-t3 text-[11px] font-semibold font-[inherit] cursor-pointer transition-colors hover:bg-s3 hover:text-t1"
+            title="Insert editor selection (⌘L)"
+            aria-label="Insert editor selection"
+            onClick={() => send({ type: "captureSelection" })}
+          >
+            <Icon name="code" size={12} />
+            <span>Selection</span>
+            <kbd className="font-mono text-[10.5px] font-semibold text-t3 leading-none rounded-[4px] bg-s3 border border-b2 px-[5px] py-px">
+              ⌘L
+            </kbd>
+          </button>
+
+          <div className="flex-1" />
+
+          <ModelPicker
+            models={models}
+            value={model}
+            onSelect={(v) => send({ type: "setModel", model: v })}
+          />
+
+          {busy ? (
+            <button
+              type="button"
+              className="inline-flex items-center justify-center w-8 h-8 rounded-md bg-transparent text-err border border-err cursor-pointer transition-colors hover:bg-err-soft"
+              onClick={onCancel}
+              title="Cancel"
+              aria-label="Cancel"
+            >
+              <Icon name="stop" size={11} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={SEND_BTN}
+              onClick={handleSubmit}
+              disabled={!canSend}
+              title="Send (↵)"
+              aria-label="Send"
+            >
+              <Icon name="send" size={13} />
+            </button>
           )}
-        />
-
-        <SkillsPicker skills={skills} />
-
-        <div className="cmp-divider" />
-
-        <button
-          type="button"
-          className="cmp-tool"
-          title="Mention a file (@)"
-          aria-label="Mention a file"
-          onClick={() => insertTokenAtCursor("@")}
-        >
-          <Icon name="at" size={13} />
-        </button>
-        <button
-          type="button"
-          className="cmp-action"
-          title="Insert editor selection (⌘L)"
-          aria-label="Insert editor selection"
-          onClick={() => send({ type: "captureSelection" })}
-        >
-          <Icon name="code" size={12} />
-          <span className="cmp-action-label">Selection</span>
-          <kbd className="kbd cmp-action-kbd">⌘L</kbd>
-        </button>
-
-        <div className="cmp-spacer" />
-
-        <ModelPicker
-          models={models}
-          value={model}
-          onSelect={(v) => send({ type: "setModel", model: v })}
-        />
-
-        {busy ? (
-          <button
-            type="button"
-            className="cmp-send stop"
-            onClick={onCancel}
-            title="Cancel"
-            aria-label="Cancel"
-          >
-            <Icon name="stop" size={11} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="cmp-send"
-            onClick={handleSubmit}
-            disabled={!canSend}
-            title="Send (↵)"
-            aria-label="Send"
-          >
-            <Icon name="send" size={13} />
-          </button>
-        )}
-      </div>
+        </div>
       )}
     </div>
   );
 }
+
+const MODE_BTN =
+  "inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-transparent border border-b1 text-t2 text-[11px] font-semibold font-[inherit] cursor-pointer transition-colors hover:bg-s3 hover:text-t1 hover:border-b3";
+
+const TOOL_BTN =
+  "inline-flex items-center justify-center w-7 h-7 rounded-md bg-transparent border-0 text-t3 cursor-pointer transition-colors hover:bg-s3 hover:text-t1 disabled:opacity-35 disabled:cursor-not-allowed";
+
+const SEND_BTN =
+  "inline-flex items-center justify-center w-8 h-8 rounded-md bg-accent text-white border-0 cursor-pointer transition-all duration-150 shadow-[0_2px_10px_var(--accent-shadow)] hover:not-[:disabled]:bg-accent-deep hover:not-[:disabled]:-translate-y-px disabled:opacity-45 disabled:cursor-not-allowed disabled:shadow-none";
