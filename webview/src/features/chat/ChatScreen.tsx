@@ -191,7 +191,7 @@ export function ChatScreen({
       <div
         ref={logRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto px-4 pt-[18px] pb-3 flex flex-col gap-[18px] scroll-smooth [&>*]:flex-shrink-0"
+        className="flex-1 overflow-y-auto px-4 pt-5 pb-4 flex flex-col gap-7 scroll-smooth [&>*]:flex-shrink-0"
       >
         {grouped.groups.length === 0 && !streaming && <EmptyState />}
         {grouped.groups.map((g, i) => {
@@ -602,7 +602,7 @@ function renderGroup(
   const hasWork = !!g.thought || g.blocks.length > 0;
   const collapsed = isTurnCollapsed(g.turnId, hasWork, isLatestTurn);
   return (
-    <div key={g.turnId} className="mt-1 mx-3.5 mb-3">
+    <div key={g.turnId} className="mt-2 mx-3.5 mb-3 pl-9">
       {hasWork && (
         <>
           <TurnHeader
@@ -611,7 +611,7 @@ function renderGroup(
             onToggle={() => toggleTurn(g.turnId, collapsed)}
           />
           {!collapsed && (
-            <div className="flex flex-col gap-0.5">
+            <div className="flex flex-col gap-1 mt-1">
               {g.thought && (
                 <ThoughtBlock text={g.thought} durationMs={g.thoughtMs} />
               )}
@@ -621,7 +621,7 @@ function renderGroup(
         </>
       )}
       {g.responseBlocks.length > 0 && (
-        <div className="flex flex-col gap-1.5 mt-1.5">
+        <div className="flex flex-col gap-2 mt-2">
           {g.responseBlocks.map((b, i) => renderTurnBlock(b, i, ctx))}
         </div>
       )}

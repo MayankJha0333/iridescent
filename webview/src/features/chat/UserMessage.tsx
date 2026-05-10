@@ -79,7 +79,7 @@ export function UserMessage({
         Y
       </div>
       <div
-        className={`md flex-1 min-w-0 leading-[1.6] break-words text-[13.5px] py-2 pr-20 pl-0 text-t1 relative${
+        className={`md flex-1 min-w-0 leading-[1.65] break-words text-[13.5px] py-2 pr-20 pl-4 text-t1 relative space-y-1.5 [&>p]:my-0 [&>p+p]:mt-2${
           editable
             ? " cursor-text rounded-lg -ml-2.5 px-2.5 transition-[background,box-shadow] duration-[140ms] hover:bg-accent-soft hover:shadow-[inset_0_0_0_1px_var(--accent-mid)] focus-visible:outline-none focus-visible:bg-accent-soft focus-visible:shadow-[inset_0_0_0_1px_var(--accent-glow)]"
             : ""
@@ -134,7 +134,7 @@ function MsgBadge({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <span className={`inline-flex flex-col align-middle${open ? " w-full" : ""}`}>
+    <span className={`inline-flex flex-col align-middle my-1${open ? " w-full" : ""}`}>
       <button
         type="button"
         className={`re-badge inline-flex items-center gap-1.5 px-2 py-[3px] rounded-md bg-s2 border border-b2 text-t2 text-[11.5px] font-mono cursor-pointer align-middle transition-colors duration-[120ms] hover:bg-s3 hover:text-t1 hover:border-b3${
