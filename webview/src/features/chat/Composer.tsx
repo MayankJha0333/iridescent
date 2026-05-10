@@ -73,6 +73,7 @@ export function Composer({
   onDiscard
 }: ComposerProps) {
   const editorRef = useRef<RichEditorHandle | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
   const [mention, setMention] = useState<MentionState>(NO_MENTION);
   // The editor is mounted once with its persisted text; React shouldn't keep
@@ -80,23 +81,52 @@ export function Composer({
   // initial value to avoid remount churn.
   const initialTextRef = useRef(value);
 
+  // Latest-onDiscard ref so the inline-mode listeners below don't have
+  // `onDiscard` as a useEffect dep — `onDiscard` is a fresh closure on
+  // every parent (ChatScreen) render, and re-running the effect would
+  // tear down/re-register listeners and re-focus the editor mid-keystroke,
+  // racing the EditConfirmModal mount.
+  const discardRef = useRef(onDiscard);
+  useEffect(() => {
+    discardRef.current = onDiscard;
+  }, [onDiscard]);
+
   useEffect(() => {
     if (focusKey > 0) editorRef.current?.focus();
   }, [focusKey]);
 
-  // Inline edit mode: focus on mount and let Escape discard.
+  // Inline edit mode: focus once on mount, then keep listeners alive for
+  // the lifetime of the inline editor.
+  //   • Esc          → discard
+  //   • click outside → discard, EXCEPT clicks landing inside a modal/dialog
+  //                     (the EditConfirmModal that opens on submit), so the
+  //                     editor stays mounted while the user picks Revert /
+  //                     Don't revert / Cancel on the modal.
   useEffect(() => {
     if (!inline) return;
     editorRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onDiscard?.();
+        discardRef.current?.();
       }
     };
+    const onPointerDown = (e: PointerEvent) => {
+      const wrap = wrapperRef.current;
+      if (!wrap) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      if (wrap.contains(target)) return;
+      if (target.closest('[role="dialog"]')) return;
+      discardRef.current?.();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [inline, onDiscard]);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [inline]);
 
   // Detect a mention query by inspecting the current selection. The popover
   // tracks the trailing `@<query>` chunk just before the caret in plain text.
@@ -140,11 +170,18 @@ export function Composer({
   };
 
   const handleSubmit = () => {
-    if (busy) return;
+    // In inline (edit) mode submit is allowed even while a turn is streaming —
+    // the server's editAt handler cancels the in-flight stream and rewinds
+    // before re-prompting. Blocking on `busy` here would silently swallow
+    // the Enter and the EditConfirmModal would never open.
+    if (busy && !inline) return;
     const text = (editorRef.current?.serialize() ?? "").trim();
     if (!text) return;
     onSubmit(text);
-    editorRef.current?.clear();
+    // Don't clear in inline mode — the parent shows a confirmation modal,
+    // and if the user cancels we want the text preserved so they can keep
+    // editing without retyping.
+    if (!inline) editorRef.current?.clear();
     setMention(NO_MENTION);
   };
 
@@ -210,7 +247,7 @@ export function Composer({
     .join(" ");
 
   return (
-    <div className={wrapperCls}>
+    <div ref={wrapperRef} className={wrapperCls}>
       <MentionPopover
         open={mention.active}
         query={mention.query}
@@ -234,29 +271,7 @@ export function Composer({
         />
       </div>
 
-      {inline ? (
-        <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-b1">
-          <div className="flex-1" />
-          <button
-            type="button"
-            className="px-2.5 py-1 rounded-md bg-s2 border border-b2 text-t2 text-[11px] font-semibold font-[inherit] cursor-pointer transition-colors hover:bg-s3 hover:text-t1 hover:border-b3"
-            onClick={() => onDiscard?.()}
-            title="Cancel edit (Esc)"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={SEND_BTN}
-            onClick={handleSubmit}
-            disabled={!canSend}
-            title="Send (↵)"
-            aria-label="Send"
-          >
-            <Icon name="send" size={13} />
-          </button>
-        </div>
-      ) : (
+      {inline ? null : (
         <div className="flex items-center gap-1 px-2 py-1.5 border-t border-b1">
           <Dropdown<PermissionMode>
             options={MODES.map((m) => ({

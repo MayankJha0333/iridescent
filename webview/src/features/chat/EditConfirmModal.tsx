@@ -40,8 +40,20 @@ export function EditConfirmModal({
         else onRevert();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Defer registration to the next frame so the in-flight keydown that
+    // *opened* this modal (the Enter pressed in the inline editor) has
+    // fully propagated and won't immediately trigger Revert. Without this,
+    // the modal would auto-confirm on the same Enter that submitted.
+    let cancelled = false;
+    const id = requestAnimationFrame(() => {
+      if (cancelled) return;
+      window.addEventListener("keydown", onKey);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [onCancel, onDontRevert, onRevert]);
 
   const clearedClause =
@@ -93,7 +105,6 @@ export function EditConfirmModal({
             type="button"
             className="px-3.5 py-1.5 rounded-md bg-accent border border-accent-mid text-white text-[12px] font-semibold font-[inherit] cursor-pointer transition-colors duration-[120ms] hover:bg-accent-deep"
             onClick={onRevert}
-            autoFocus
           >
             Revert <span className="ml-1.5 text-[11px] font-mono text-white/85 font-medium">↵</span>
           </button>
