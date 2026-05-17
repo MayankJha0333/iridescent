@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
+import * as fs from "node:fs";
 import { Session } from "../core/session.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { PermissionMode, StreamDelta, PlanRevisionMeta } from "../core/types.js";
 import { buildSystemPrompt } from "./system-prompt.js";
-import { createProvider } from "../providers/factory.js";
+import { createProvider, bundledClaudeBinary } from "../providers/factory.js";
 import { getToken, setToken, deleteToken, classifyToken } from "../secrets.js";
 import { CheckpointService } from "../services/checkpoint.js";
 import { HistoryService, deriveTitle } from "../services/history.js";
@@ -44,6 +45,19 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
    *  if SecretStorage somehow returns a stale token, the explicit logout
    *  takes precedence until the user signs back in. */
   private signedOut = false;
+  /** In-flight `claude setup-token` terminal, if any. We use a VS Code
+   *  terminal (not a background child process) because `setup-token` is
+   *  an interactive command — it prints a URL, then either waits for the
+   *  user to paste a code back into stdin or for its local OAuth callback
+   *  server to fire. Either way we need a real TTY the user can see. */
+  private setupTerminal?: vscode.Terminal;
+
+  /** Persists "the user signed in via `claude setup-token`, which stored
+   *  credentials in Claude Code's own credential store (Keychain on macOS
+   *  or ~/.claude/.credentials.json elsewhere)". When this is true we treat
+   *  the user as authed even if SecretStorage holds no token — the bundled
+   *  CLI will pick up its own creds on each spawn. */
+  private static readonly CLAUDE_CREDS_READY_KEY = "iridescent.claudeCredsReady.v1";
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
     this.history = new HistoryService(ctx);
@@ -278,7 +292,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const model = cfg.get<string>("model", "claude-sonnet-4-6");
     const permissionMode = cfg.get<PermissionMode>("permissionMode", "default");
     const token = await getToken(this.ctx);
-    const authed = !this.signedOut && !!token;
+    const credsReady = this.ctx.globalState.get<boolean>(
+      ChatPanelProvider.CLAUDE_CREDS_READY_KEY,
+      false
+    );
+    const authed = !this.signedOut && (!!token || credsReady);
     this.post({
       type: "auth",
       authed,
@@ -298,6 +316,96 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
    * No CLI invocation, no `~/.claude/` file manipulation. The user can sign
    * back in by pasting a fresh token on the welcome screen.
    */
+  /**
+   * Kick off the automated OAuth flow.
+   *
+   * `claude setup-token` is an interactive command — it prints a URL,
+   * waits for the user to sign in (either via stdin paste or its local
+   * callback server), then writes credentials to Claude Code's own store
+   * and exits. A background child process can't service its stdin, so
+   * we run it inside a visible VS Code terminal the user can interact
+   * with. When they confirm sign-in via the welcome screen, we persist
+   * the credsReady flag and proceed.
+   */
+  private handleStartClaudeSetup(): void {
+    // Drop any prior terminal — re-using one that already had `claude`
+    // running would type the new command as REPL input, not execute it.
+    this.cancelClaudeSetup();
+
+    const binary = bundledClaudeBinary();
+    if (!fs.existsSync(binary)) {
+      this.post({
+        type: "setupProgress",
+        stage: "error",
+        error:
+          `Bundled Claude binary not found at ${binary}. ` +
+          `Reinstall the extension, or paste a token manually below.`
+      });
+      return;
+    }
+
+    this.post({ type: "setupProgress", stage: "launching" });
+
+    const term = vscode.window.createTerminal({ name: "Iridescent Sign-in" });
+    this.setupTerminal = term;
+    term.show(true);
+    // Quote the binary path — node_modules paths on macOS often contain
+    // spaces (e.g. when VS Code is installed to "Applications").
+    const cmd = `"${binary.replace(/"/g, '\\"')}" setup-token`;
+    // sendText is async-ish; give the shell a tick to print its prompt
+    // first so the command shows up cleanly.
+    setTimeout(() => {
+      term.sendText(cmd, true);
+      this.post({ type: "setupProgress", stage: "awaitingBrowser" });
+    }, 250);
+
+    // If the user closes the terminal mid-flow, snap back to idle so the
+    // welcome screen doesn't stay stuck on "awaiting browser".
+    const closeSub = vscode.window.onDidCloseTerminal((closed) => {
+      if (closed !== term) return;
+      closeSub.dispose();
+      if (this.setupTerminal === term) {
+        this.setupTerminal = undefined;
+        // Don't error — the user may have closed the terminal after
+        // completing sign-in. They'll click "I've signed in" next.
+      }
+    });
+  }
+
+  /**
+   * Sign-in succeeded but the CLI didn't emit a token (creds went into
+   * Claude Code's own store). Persist the "credsReady" flag and let the
+   * CLI use its own credentials on every subsequent spawn — no env
+   * injection from our side.
+   */
+  private async markClaudeCredsReady(): Promise<void> {
+    this.post({ type: "setupProgress", stage: "saving" });
+    await this.ctx.globalState.update(
+      ChatPanelProvider.CLAUDE_CREDS_READY_KEY,
+      true
+    );
+    this.signedOut = false;
+    this.setupTerminal?.dispose();
+    this.setupTerminal = undefined;
+    this.post({ type: "setupProgress", stage: "done" });
+    await this.broadcastAuthState();
+  }
+
+  /** Cancel a pending `claude setup-token` invocation. */
+  private cancelClaudeSetup(): void {
+    this.setupTerminal?.dispose();
+    this.setupTerminal = undefined;
+  }
+
+  /**
+   * User clicked "I've signed in" on the welcome screen. The terminal
+   * flow stored credentials in Claude Code's own credential store; mark
+   * credsReady and proceed.
+   */
+  private async confirmClaudeSetup(): Promise<void> {
+    await this.markClaudeCredsReady();
+  }
+
   /**
    * Run a shell command in a fresh, integrated terminal.
    *
@@ -340,6 +448,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     this.orchestrator = undefined;
     this.resumeId = undefined;
     await deleteToken(this.ctx);
+    // Clear the "Claude Code has stored creds" flag too — otherwise the
+    // user would stay authed via the CLI's own keychain entry even after
+    // we wiped our SecretStorage. Note: we don't `claude logout` because
+    // that triggers an interactive terminal flow; the next time the user
+    // signs in, `claude setup-token` will overwrite the stored creds.
+    await this.ctx.globalState.update(
+      ChatPanelProvider.CLAUDE_CREDS_READY_KEY,
+      false
+    );
     this.signedOut = true;
     await this.broadcastAuthState();
   }
@@ -513,6 +630,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         if (typeof msg.token === "string") {
           await this.handleSubmitToken(msg.token);
         }
+        break;
+      case "startClaudeSetup":
+        this.handleStartClaudeSetup();
+        break;
+      case "cancelClaudeSetup":
+        this.cancelClaudeSetup();
+        break;
+      case "confirmClaudeSetup":
+        await this.confirmClaudeSetup();
         break;
       case "setModel":
         if (typeof msg.model === "string") {
@@ -1616,12 +1742,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       []
     );
 
-    // Refuse to start a turn when no token is stored — defends against
-    // race conditions where the user clicks Send during the brief window
-    // between rendering the chat and a sign-out event landing.
+    // Refuse to start a turn when the user is signed out or has neither a
+    // pasted token nor Claude Code's own stored credentials. `credsReady`
+    // is set when `claude setup-token` exits cleanly without emitting a
+    // token (the OAuth creds live in Claude Code's own credential store).
     const token = await getToken(this.ctx);
-    if (!token || this.signedOut) {
-      this.signedOut = !token;
+    const credsReady = this.ctx.globalState.get<boolean>(
+      ChatPanelProvider.CLAUDE_CREDS_READY_KEY,
+      false
+    );
+    if ((!token && !credsReady) || this.signedOut) {
+      this.signedOut = !token && !credsReady;
       await this.broadcastAuthState();
       return;
     }

@@ -232,6 +232,9 @@ export type Outbound =
   | { type: "runTerminalCommand"; command: string }
   | { type: "claudeLogout" }
   | { type: "submitToken"; token: string }
+  | { type: "startClaudeSetup" }
+  | { type: "cancelClaudeSetup" }
+  | { type: "confirmClaudeSetup" }
   | { type: "requestModels" }
   | { type: "requestSkills" }
   | { type: "requestFileSearch"; id: string; query: string }
@@ -314,6 +317,18 @@ export type Inbound =
   | { type: "models"; models: ModelInfo[] }
   | { type: "skills"; skills: SkillInfo[] }
   | { type: "tokenResult"; ok: boolean; error?: string }
+  | {
+      type: "setupProgress";
+      /**
+       * `launching` — child process spawned, waiting for first output
+       * `awaitingBrowser` — URL detected and opened, waiting for OAuth callback
+       * `saving` — token captured, persisting to SecretStorage
+       * `done` — auth state already flipped to signed-in
+       * `error` — terminal state; message is in `error`
+       */
+      stage: "launching" | "awaitingBrowser" | "saving" | "done" | "error";
+      error?: string;
+    }
   | { type: "fileSearchResults"; id: string; results: FileSearchResult[] }
   | {
       type: "insertSelection";

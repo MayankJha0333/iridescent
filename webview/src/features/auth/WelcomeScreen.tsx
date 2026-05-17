@@ -1,71 +1,94 @@
 // ─────────────────────────────────────────────────────────────
-// WelcomeScreen — single-path Claude.ai Subscription sign-in.
+// WelcomeScreen — automated Claude.ai Subscription sign-in.
 //
-// Layout is intentionally tall and step-numbered so the user
-// always knows what to do next:
+// Click "Sign in with Claude" → host spawns the bundled
+// `claude setup-token`, captures its stdout, opens the OAuth URL
+// in the user's default browser via vscode.env.openExternal, and
+// stores the emitted token in SecretStorage. The UI tracks each
+// stage in real time via `setupProgress` events.
 //
-//   ① Run `claude setup-token` to get a token
-//      → Click button → terminal opens → browser OAuth → token
-//        printed in terminal
-//
-//   ② Paste the token here
-//      → Hidden input, live format detection
-//
-//   ③ Sign in
-//      → Token goes to SecretStorage via `submitToken` RPC
-//
-// Token is injected as `ANTHROPIC_API_KEY` whenever Iridescent
-// spawns the bundled `claude` CLI. No `~/.claude/` mutation.
+// If the auto-flow errors out (rare — typically a missing binary or
+// a stale OAuth state), a manual paste fallback is one disclosure
+// click away.
 // ─────────────────────────────────────────────────────────────
 
 import { KeyboardEvent, ReactNode, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Orb } from "../../design/primitives";
+import { Orb, Spinner } from "../../design/primitives";
 import { Icon } from "../../design/icons";
 import { send, onMessage } from "../../lib/rpc";
+
+type SetupStage =
+  | "idle"
+  | "launching"
+  | "awaitingBrowser"
+  | "saving"
+  | "done"
+  | "error";
 
 type TokenKind = "oauth" | "api" | "unknown" | "empty";
 
 export function WelcomeScreen() {
-  const [token, setToken] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [stage, setStage] = useState<SetupStage>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [launchedTerminal, setLaunchedTerminal] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualToken, setManualToken] = useState("");
+  const [manualSubmitting, setManualSubmitting] = useState(false);
 
+  // Subscribe to host's setup + manual-paste progress events.
   useEffect(() => {
     return onMessage((m) => {
-      if (m.type !== "tokenResult") return;
-      setSubmitting(false);
-      if (m.ok) {
-        setError(null);
-        setToken("");
-      } else {
-        setError(m.error ?? "Token rejected.");
+      if (m.type === "setupProgress") {
+        setStage(m.stage);
+        if (m.stage === "error") {
+          setError(m.error ?? "Sign-in failed.");
+        } else {
+          setError(null);
+        }
+      } else if (m.type === "tokenResult") {
+        setManualSubmitting(false);
+        if (m.ok) {
+          setError(null);
+          setManualToken("");
+        } else {
+          setError(m.error ?? "Token rejected.");
+        }
       }
     });
   }, []);
 
-  const kind = classify(token);
-  const valid = kind === "oauth" || kind === "api";
-
-  const submit = () => {
-    if (!valid || submitting) return;
-    setSubmitting(true);
+  const handleAutoSignIn = () => {
     setError(null);
-    send({ type: "submitToken", token: token.trim() });
+    setStage("launching");
+    send({ type: "startClaudeSetup" });
   };
 
-  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+  const handleCancel = () => {
+    send({ type: "cancelClaudeSetup" });
+    setStage("idle");
+  };
+
+  const handleConfirmSignedIn = () => {
+    send({ type: "confirmClaudeSetup" });
+  };
+
+  const handleManualSubmit = () => {
+    const t = manualToken.trim();
+    if (!t || manualSubmitting) return;
+    setManualSubmitting(true);
+    setError(null);
+    send({ type: "submitToken", token: t });
+  };
+
+  const onManualKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      submit();
+      handleManualSubmit();
     }
   };
 
-  const launchOAuth = () => {
-    send({ type: "runTerminalCommand", command: "claude setup-token" });
-    setLaunchedTerminal(true);
-  };
+  const manualKind = classify(manualToken);
+  const manualValid = manualKind === "oauth" || manualKind === "api";
 
   return (
     <motion.div
@@ -74,8 +97,7 @@ export function WelcomeScreen() {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3 }}
     >
-      {/* Ambient gradient — pure CSS, near-zero cost. Adds depth so the
-          form doesn't feel like a flat dialog. */}
+      {/* Ambient indigo glow */}
       <div
         className="pointer-events-none absolute inset-0 opacity-60"
         aria-hidden
@@ -101,7 +123,7 @@ export function WelcomeScreen() {
         </p>
       </motion.div>
 
-      {/* Step card */}
+      {/* Main card */}
       <motion.div
         className="relative bg-s1 border border-b1 rounded-2xl overflow-hidden"
         style={{
@@ -112,7 +134,7 @@ export function WelcomeScreen() {
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.45, delay: 0.06, ease: [0.16, 1, 0.3, 1] }}
       >
-        {/* Card header */}
+        {/* Header */}
         <div className="flex items-center gap-2 px-5 py-3 border-b border-b1 bg-s2/40">
           <div
             className="w-6 h-6 rounded-md flex items-center justify-center text-white"
@@ -133,103 +155,195 @@ export function WelcomeScreen() {
           </span>
         </div>
 
-        {/* Steps */}
-        <div className="p-5 flex flex-col gap-5">
-          <Step
-            n={1}
-            title="Get your token"
-            done={launchedTerminal}
-          >
-            <p className="text-[12.5px] leading-[1.55] m-0 mb-2.5 text-t3">
-              We'll run{" "}
-              <code className="font-mono bg-s2 border border-b1 px-1.5 py-px rounded-[4px] text-[11.5px] text-accent-glow">
-                claude setup-token
-              </code>{" "}
-              in a terminal. It opens claude.ai in your browser, walks you
-              through signing in, and prints a long-lived OAuth token.
-            </p>
-            <button
-              type="button"
-              onClick={launchOAuth}
-              className={[
-                "w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md cursor-pointer text-[12.5px] font-semibold font-[inherit] transition-colors duration-150 border",
-                launchedTerminal
-                  ? "bg-s2 border-b2 text-t2 hover:bg-s3"
-                  : "bg-accent-soft border-accent-mid text-accent-glow hover:bg-accent-mid hover:text-t1"
-              ].join(" ")}
-            >
-              <Icon name="terminal" size={12} />
-              {launchedTerminal ? "Reopen terminal" : "Run claude setup-token"}
-            </button>
-          </Step>
-
-          <Divider />
-
-          <Step
-            n={2}
-            title="Paste the token"
-            done={valid}
-          >
-            <input
-              type="password"
-              spellCheck={false}
-              placeholder="sk-ant-oat…"
-              value={token}
-              onChange={(e) => {
-                setToken(e.target.value.replace(/\s+/g, ""));
-                if (error) setError(null);
-              }}
-              onKeyDown={onKey}
-              disabled={submitting}
-              className="w-full bg-s0 text-t1 border border-b2 rounded-lg px-3 py-2.5 font-mono text-[12px] focus:outline-none focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] transition-[border-color,box-shadow] duration-150"
-            />
-            <AnimatePresence mode="wait">
-              {token && (
-                <motion.div
-                  key={kind}
-                  initial={{ opacity: 0, y: -2 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -2 }}
-                  transition={{ duration: 0.14 }}
-                  className={`text-[11px] font-semibold mt-2 inline-flex items-center gap-1 ${
-                    valid ? "text-[var(--ok)]" : "text-[var(--warn)]"
-                  }`}
+        {/* Body */}
+        <div className="p-5">
+          <AnimatePresence mode="wait" initial={false}>
+            {stage === "idle" && (
+              <motion.div key="idle" {...fade}>
+                <p className="text-[13px] leading-[1.6] m-0 mb-4 text-t2">
+                  We'll open a terminal that runs <code className="font-mono text-accent-glow">claude setup-token</code>. Follow the prompts to sign in
+                  via your browser, then come back here.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleAutoSignIn}
+                  className="w-full inline-flex items-center justify-center gap-2 bg-accent text-white border-0 px-3 py-[12px] rounded-lg cursor-pointer text-[13.5px] font-bold tracking-[-0.1px] transition-all duration-150 font-[inherit] hover:bg-accent-deep hover:-translate-y-px"
+                  style={{ boxShadow: "0 4px 18px var(--accent-shadow)" }}
                 >
-                  <Icon name={valid ? "check" : "shield"} size={10} />
-                  {kind === "oauth" && "OAuth subscription token detected"}
-                  {kind === "api" &&
-                    "Anthropic Console API key detected — also accepted"}
-                  {kind === "unknown" &&
-                    "Unrecognized — token should start with sk-ant-oat…"}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </Step>
-
-          <Divider />
-
-          <Step n={3} title="Sign in">
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, y: -2 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-err-soft text-err border border-[rgba(248,113,113,0.35)] rounded-lg px-3 py-2 text-[11.5px] mb-2.5 leading-[1.45]"
-              >
-                {error}
+                  <Icon name="sparkle" size={13} />
+                  Sign in with Claude
+                </button>
               </motion.div>
             )}
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!valid || submitting}
-              className="w-full bg-accent text-white border-0 px-3 py-[11px] rounded-lg cursor-pointer text-[13px] font-bold tracking-[-0.1px] transition-all duration-150 font-[inherit] hover:not-[:disabled]:bg-accent-deep hover:not-[:disabled]:-translate-y-px disabled:opacity-45 disabled:cursor-not-allowed"
-              style={{ boxShadow: "0 4px 18px var(--accent-shadow)" }}
-            >
-              {submitting ? "Signing in…" : "Sign in"}
-            </button>
-          </Step>
+
+            {(stage === "launching" ||
+              stage === "awaitingBrowser" ||
+              stage === "saving") && (
+              <motion.div key="progress" {...fade}>
+                <ProgressList stage={stage} />
+                {stage === "awaitingBrowser" && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="mt-4 bg-s2/50 border border-b1 rounded-lg px-3 py-2.5"
+                  >
+                    <p className="text-[11.5px] text-t3 m-0 mb-2 leading-[1.5]">
+                      Complete the sign-in in the{" "}
+                      <span className="text-t1 font-semibold">Iridescent Sign-in</span>{" "}
+                      terminal at the bottom — open the URL it prints, then
+                      paste the code back into the terminal. Click below once
+                      it says you're signed in.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleConfirmSignedIn}
+                      className="w-full bg-accent text-white border-0 px-3 py-2 rounded-lg cursor-pointer text-[12.5px] font-bold transition-all duration-150 font-[inherit] hover:bg-accent-deep"
+                      style={{ boxShadow: "0 2px 10px var(--accent-shadow)" }}
+                    >
+                      I've signed in — continue
+                    </button>
+                  </motion.div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="w-full mt-3 bg-transparent text-t3 border border-b2 px-3 py-2 rounded-lg cursor-pointer text-[12.5px] font-semibold transition-colors duration-150 font-[inherit] hover:bg-s2 hover:text-t1"
+                >
+                  Cancel
+                </button>
+              </motion.div>
+            )}
+
+            {stage === "done" && (
+              <motion.div key="done" {...fade}>
+                <div className="text-center py-3">
+                  <div
+                    className="inline-flex items-center justify-center w-10 h-10 rounded-full mb-2"
+                    style={{
+                      background: "var(--ok-soft)",
+                      border: "1px solid rgba(74,222,128,0.45)"
+                    }}
+                  >
+                    <Icon name="check" size={16} />
+                  </div>
+                  <p className="text-[13.5px] font-bold m-0 text-t1">
+                    Signed in
+                  </p>
+                  <p className="text-[12px] text-t3 m-0 mt-1">
+                    Loading your workspace…
+                  </p>
+                </div>
+              </motion.div>
+            )}
+
+            {stage === "error" && (
+              <motion.div key="error" {...fade}>
+                <div
+                  className="bg-err-soft text-err border border-[rgba(248,113,113,0.35)] rounded-lg px-3 py-2.5 text-[12px] mb-3 leading-[1.5]"
+                >
+                  <div className="font-bold mb-1 inline-flex items-center gap-1">
+                    <Icon name="x" size={11} />
+                    Sign-in failed
+                  </div>
+                  {error ?? "Unknown error."}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAutoSignIn}
+                  className="w-full bg-accent text-white border-0 px-3 py-[11px] rounded-lg cursor-pointer text-[13px] font-bold tracking-[-0.1px] transition-all duration-150 font-[inherit] hover:bg-accent-deep mb-2"
+                  style={{ boxShadow: "0 2px 12px var(--accent-shadow)" }}
+                >
+                  Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setManualOpen(true)}
+                  className="w-full bg-transparent text-t2 border border-b2 px-3 py-2 rounded-lg cursor-pointer text-[12.5px] font-semibold transition-colors duration-150 font-[inherit] hover:bg-s2 hover:text-t1"
+                >
+                  Paste a token manually
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.div>
+
+      {/* Manual paste fallback — collapsed by default, revealed on
+          demand from the idle screen or auto-revealed from an error. */}
+      <AnimatePresence initial={false}>
+        {(manualOpen || stage === "error") && (
+          <motion.div
+            key="manual"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-4 bg-s1 border border-b1 rounded-2xl p-5">
+              <div className="text-[12.5px] font-semibold text-t1 mb-2 flex items-center gap-1.5">
+                <Icon name="code" size={12} />
+                Paste a token manually
+              </div>
+              <p className="text-[11.5px] leading-[1.55] m-0 mb-2.5 text-t3">
+                Use an OAuth token from{" "}
+                <code className="font-mono text-accent-glow">claude setup-token</code>{" "}
+                or an Anthropic Console API key (
+                <code className="font-mono text-accent-glow">sk-ant-api…</code>).
+              </p>
+              <input
+                type="password"
+                spellCheck={false}
+                placeholder="sk-ant-oat… or sk-ant-api…"
+                value={manualToken}
+                onChange={(e) => {
+                  setManualToken(e.target.value.replace(/\s+/g, ""));
+                  if (error) setError(null);
+                }}
+                onKeyDown={onManualKey}
+                disabled={manualSubmitting}
+                className="w-full bg-s0 text-t1 border border-b2 rounded-lg px-3 py-2.5 font-mono text-[12px] focus:outline-none focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] transition-[border-color,box-shadow] duration-150"
+              />
+              {manualToken && (
+                <div
+                  className={`text-[11px] font-semibold mt-1.5 inline-flex items-center gap-1 ${
+                    manualValid ? "text-[var(--ok)]" : "text-[var(--warn)]"
+                  }`}
+                >
+                  <Icon name={manualValid ? "check" : "shield"} size={10} />
+                  {manualKind === "oauth" && "OAuth subscription token detected"}
+                  {manualKind === "api" && "Anthropic Console API key detected"}
+                  {manualKind === "unknown" &&
+                    "Unrecognized format — should start with sk-ant-…"}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={handleManualSubmit}
+                disabled={!manualValid || manualSubmitting}
+                className="w-full mt-3 bg-accent text-white border-0 px-3 py-[10px] rounded-lg cursor-pointer text-[12.5px] font-bold transition-all duration-150 font-[inherit] hover:not-[:disabled]:bg-accent-deep disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                {manualSubmitting ? "Signing in…" : "Sign in with token"}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Disclosure button for manual paste — only on idle screen */}
+      {stage === "idle" && !manualOpen && (
+        <motion.button
+          type="button"
+          onClick={() => setManualOpen(true)}
+          className="text-[11.5px] text-t3 hover:text-t1 transition-colors mt-3 bg-transparent border-0 cursor-pointer font-[inherit] mx-auto"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5, duration: 0.2 }}
+        >
+          Already have a token? Paste it manually →
+        </motion.button>
+      )}
 
       {/* Footnote */}
       <motion.div
@@ -247,45 +361,86 @@ export function WelcomeScreen() {
   );
 }
 
-// ─────────────────── Sub-components ───────────────────
+// ─────────────────── Progress list ───────────────────
 
-function Step({
-  n,
+function ProgressList({ stage }: { stage: SetupStage }) {
+  const items: Array<{
+    key: SetupStage;
+    title: string;
+    sub: string;
+  }> = [
+    {
+      key: "launching",
+      title: "Opening terminal",
+      sub: "Starting `claude setup-token` in a new terminal…"
+    },
+    {
+      key: "awaitingBrowser",
+      title: "Sign in via terminal",
+      sub: "Follow the prompts in the terminal at the bottom."
+    },
+    {
+      key: "saving",
+      title: "Finishing up",
+      sub: "Activating your Claude credentials…"
+    }
+  ];
+
+  const stageIndex = items.findIndex((it) => it.key === stage);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((it, i) => {
+        const state: "pending" | "active" | "done" =
+          i < stageIndex ? "done" : i === stageIndex ? "active" : "pending";
+        return <ProgressRow key={it.key} state={state} title={it.title} sub={it.sub} />;
+      })}
+    </div>
+  );
+}
+
+function ProgressRow({
+  state,
   title,
-  children,
-  done
+  sub
 }: {
-  n: number;
+  state: "pending" | "active" | "done";
   title: string;
-  children: ReactNode;
-  done?: boolean;
+  sub: string;
 }) {
   return (
-    <div className="flex items-start gap-3.5">
-      <div
-        className={[
-          "flex-shrink-0 w-6 h-6 rounded-full inline-flex items-center justify-center text-[11px] font-extrabold font-mono border transition-colors duration-200",
-          done
-            ? "bg-[var(--ok-soft)] border-[rgba(74,222,128,0.45)] text-[var(--ok)]"
-            : "bg-s2 border-b2 text-t2"
-        ].join(" ")}
-        aria-hidden
-      >
-        {done ? <Icon name="check" size={11} /> : n}
+    <div className="flex items-start gap-3">
+      <div className="flex-shrink-0 w-6 h-6 flex items-center justify-center">
+        {state === "done" && (
+          <motion.span
+            initial={{ scale: 0.7, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: "spring", stiffness: 360, damping: 22 }}
+            className="w-6 h-6 rounded-full inline-flex items-center justify-center bg-[var(--ok-soft)] border border-[rgba(74,222,128,0.4)] text-[var(--ok)]"
+          >
+            <Icon name="check" size={11} />
+          </motion.span>
+        )}
+        {state === "active" && <Spinner size={16} />}
+        {state === "pending" && (
+          <span className="w-2 h-2 rounded-full bg-b2" aria-hidden />
+        )}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[12.5px] font-semibold text-t1 mb-1.5 tracking-[-0.1px]">
+        <div
+          className={`text-[12.5px] font-semibold ${
+            state === "pending" ? "text-t3" : "text-t1"
+          }`}
+        >
           {title}
         </div>
-        {children}
+        <div className="text-[11px] text-t3 mt-0.5">{sub}</div>
       </div>
     </div>
   );
 }
 
-function Divider() {
-  return <div className="h-px bg-b1 ml-[34px]" />;
-}
+// ─────────────────── Helpers ───────────────────
 
 function classify(token: string): TokenKind {
   const t = token.trim();
@@ -294,3 +449,10 @@ function classify(token: string): TokenKind {
   if (t.startsWith("sk-ant-api")) return "api";
   return "unknown";
 }
+
+const fade = {
+  initial: { opacity: 0, y: 4 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -4 },
+  transition: { duration: 0.18 }
+} as const;
